@@ -1,0 +1,18 @@
+[
+  {
+    "reservationCode": "R001",
+    "name": "Carlos Garcia",
+    "email": "carlos@example.com",
+    "plate": "BE123456",
+    "parkingValid": true,
+    "room": "109"
+  },
+  {
+    "reservationCode": "R002",
+    "name": "Anna Muller",
+    "email": "anna@example.com",
+    "plate": "ZH987654",
+    "parkingValid": false,
+    "room": "204"
+  }
+]
