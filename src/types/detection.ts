@@ -10,6 +10,8 @@ export interface Detection {
 
   snapshotUrl?: string;
   videoUrl?: string;
+  localSnapshotPath?: string;
+  localVideoPath?: string;
 
   parkingStatus: ParkingStatus;
   associationStatus: AssociationStatus;
@@ -31,4 +33,6 @@ export interface FrigateDetectionInput {
   camera: string;
   snapshotUrl?: string;
   videoUrl?: string;
+  localSnapshotPath?: string;
+  localVideoPath?: string;
 }

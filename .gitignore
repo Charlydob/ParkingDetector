@@ -4,3 +4,5 @@ dist
 .env.local
 .env.*.local
 *.tsbuildinfo
+backend/data/processed-events.json
+backend/evidence/
