@@ -1,5 +1,5 @@
 import { initializeApp, getApps } from "firebase/app";
-import { get, getDatabase, push, ref, set } from "firebase/database";
+import { get, getDatabase, push, ref, set, update } from "firebase/database";
 
 const FIREBASE_DEFAULTS = {
   VITE_FIREBASE_API_KEY: "AIzaSyAZ3tJfi-wyW11OWJLpBx2I1rFKr9gTq7Q",
@@ -17,9 +17,32 @@ function getEnvValue(name) {
 }
 
 function removeUndefinedValues(value) {
-  return Object.fromEntries(
-    Object.entries(value).filter(([, fieldValue]) => fieldValue !== undefined),
-  );
+  if (Array.isArray(value)) {
+    return value.map(removeUndefinedValues);
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, fieldValue]) => fieldValue !== undefined)
+        .map(([key, fieldValue]) => [key, removeUndefinedValues(fieldValue)]),
+    );
+  }
+
+  return value;
+}
+
+function snapshotCollection(snapshot) {
+  const value = snapshot.val();
+
+  if (!value) {
+    return [];
+  }
+
+  return Object.entries(value).map(([id, item]) => ({
+    ...item,
+    id,
+  }));
 }
 
 export function createFirebaseClient() {
@@ -47,6 +70,29 @@ export function createFirebaseClient() {
         ...detection,
         id: newDetectionRef.key,
       };
+    },
+    async getDetections() {
+      return snapshotCollection(await get(ref(database, "detections")));
+    },
+    async updateDetection(detectionId, patch) {
+      await update(ref(database, `detections/${detectionId}`), removeUndefinedValues(patch));
+    },
+    async createCheckIn(checkIn) {
+      const newCheckInRef = push(ref(database, "checkIns"));
+      const firebaseCheckIn = removeUndefinedValues(checkIn);
+
+      await set(newCheckInRef, firebaseCheckIn);
+
+      return {
+        ...checkIn,
+        id: newCheckInRef.key,
+      };
+    },
+    async getCheckIns() {
+      return snapshotCollection(await get(ref(database, "checkIns")));
+    },
+    async updateStripeDiagnostic(diagnostic) {
+      await update(ref(database, "diagnostics/stripe"), removeUndefinedValues(diagnostic));
     },
     async testConnection() {
       await get(ref(database, ".info/connected"));

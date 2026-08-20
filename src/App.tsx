@@ -9,16 +9,24 @@ import { DemoDetectionForm } from "./components/DemoDetectionForm";
 import { Header } from "./components/Header";
 import { ReservationDiagnostics } from "./components/ReservationDiagnostics";
 import { StatsCards } from "./components/StatsCards";
+import { StripeDiagnostics } from "./components/StripeDiagnostics";
 import {
+  confirmTemporalAssociation,
   listenToDetections,
   listenToFirebaseConnection,
+  listenToStripeDiagnostic,
   updateDetectionReviewStatus,
 } from "./services/firebaseDetectionService";
 import {
   getReservationSourceName,
   loadReservationsWithDiagnostics,
 } from "./services/reservationService";
-import type { Detection, ReviewStatus } from "./types/detection";
+import type {
+  AssociationCandidate,
+  Detection,
+  ReviewStatus,
+  StripeDiagnostic,
+} from "./types/detection";
 import type { ReservationLoadResult } from "./types/reservation";
 import { normalizePlate } from "./utils/normalizePlate";
 
@@ -72,6 +80,7 @@ export default function App() {
   const [filter, setFilter] = useState<DetectionFilter>("all");
   const [search, setSearch] = useState("");
   const [diagnostics, setDiagnostics] = useState(initialDiagnostics);
+  const [stripeDiagnostic, setStripeDiagnostic] = useState<StripeDiagnostic>({});
   const [loadingReservations, setLoadingReservations] = useState(false);
   const [updatingReview, setUpdatingReview] = useState(false);
 
@@ -81,10 +90,15 @@ export default function App() {
       setDetections,
       (error) => setFirebaseError(error.message),
     );
+    const unsubscribeStripe = listenToStripeDiagnostic(
+      setStripeDiagnostic,
+      (error) => setFirebaseError(error.message),
+    );
 
     return () => {
       unsubscribeConnection();
       unsubscribeDetections();
+      unsubscribeStripe();
     };
   }, []);
 
@@ -126,6 +140,21 @@ export default function App() {
       setNotice("Revision actualizada.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "No se pudo actualizar la revision.");
+    } finally {
+      setUpdatingReview(false);
+    }
+  }
+
+  async function handleConfirmCandidate(
+    detectionId: string,
+    candidate: AssociationCandidate,
+  ): Promise<void> {
+    setUpdatingReview(true);
+    try {
+      await confirmTemporalAssociation(detectionId, candidate);
+      setNotice("Asociacion temporal confirmada.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "No se pudo confirmar.");
     } finally {
       setUpdatingReview(false);
     }
@@ -174,8 +203,10 @@ export default function App() {
           <DetectionDetail
             detection={selectedDetection}
             onReviewChange={handleReviewChange}
+            onConfirmCandidate={handleConfirmCandidate}
             updating={updatingReview}
           />
+          <StripeDiagnostics diagnostic={stripeDiagnostic} />
           <ReservationDiagnostics
             diagnostics={diagnostics}
             onRefresh={refreshReservations}

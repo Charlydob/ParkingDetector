@@ -18,6 +18,12 @@ VITE_FIREBASE_PROJECT_ID=parkingdetector-4ac76
 VITE_FIREBASE_STORAGE_BUCKET=parkingdetector-4ac76.firebasestorage.app
 VITE_FIREBASE_MESSAGING_SENDER_ID=141696751478
 VITE_FIREBASE_APP_ID=1:141696751478:web:c81807bec8e141c1480c57
+
+VITE_BACKEND_URL=http://127.0.0.1:3001
+BACKEND_PORT=3001
+MATCH_TIME_WINDOW_MINUTES=15
+MATCH_AUTO_CONFIDENCE_THRESHOLD=0.8
+PLATE_COOLDOWN_MINUTES=15
 ```
 
 La configuracion publica de Firebase de una app web no es una contrasena. Aun asi, las reglas de la base de datos son las que protegen los datos.
@@ -30,7 +36,7 @@ Usa esta opcion para probar la aplicacion sin Google Sheets, JSON ni Frigate.
 VITE_RESERVATION_SOURCE=demo
 ```
 
-La app cargara reservas de ejemplo y el boton `Simular deteccion` guardara detecciones reales en Firebase Realtime Database.
+La app cargara reservas de ejemplo y el boton `Simular deteccion` llamara al backend local para guardar detecciones reales en Firebase Realtime Database.
 
 ## Usar Google Sheets
 
@@ -134,13 +140,138 @@ be123456
 
 ## Firebase Realtime Database
 
-La app usa esta ruta:
+La app usa estas rutas:
 
 ```text
 detections/
+checkIns/
+diagnostics/stripe/
 ```
 
-Cada simulacion o futura deteccion de Frigate crea un nuevo registro en Firebase Realtime Database.
+Cada simulacion o futura deteccion de Frigate crea un nuevo registro en `detections/`. Cada check-in de Stripe o de prueba crea un registro en `checkIns/`.
+
+## Backend Local
+
+Arranca el backend:
+
+```bash
+npm run backend
+```
+
+Arranca el frontend:
+
+```bash
+npm run dev
+```
+
+El frontend usa `VITE_BACKEND_URL` para llamar a endpoints locales como `/api/test-detection`.
+
+## Matching Temporal Y Cooldown
+
+Variables disponibles:
+
+```env
+MATCH_TIME_WINDOW_MINUTES=15
+MATCH_AUTO_CONFIDENCE_THRESHOLD=0.8
+PLATE_COOLDOWN_MINUTES=15
+```
+
+`MATCH_TIME_WINDOW_MINUTES` define la ventana alrededor de `detectedAt` y `checkInAt`.
+
+`MATCH_AUTO_CONFIDENCE_THRESHOLD` define cuando un candidato temporal claramente dominante puede pasar a `matched`.
+
+`PLATE_COOLDOWN_MINUTES` evita procesar como nueva llegada la misma matricula dentro del intervalo. Este cooldown se persiste en `backend/data/plate-cooldown.json` y es independiente de la deduplicacion por `eventId`.
+
+La confianza temporal se calcula en `shared/detectionLogic.mjs`:
+
+```text
+0-2 min   -> 0.95
+2-5 min   -> 0.88
+5-10 min  -> 0.70
+10-15 min -> 0.55
+```
+
+Si hay varios check-ins cercanos se aplica una penalizacion simple por concurrencia.
+
+## Stripe Webhook Local
+
+Configura secretos solo en `.env`:
+
+```env
+STRIPE_SECRET_KEY=sk_test_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+```
+
+El endpoint del backend es:
+
+```text
+POST /api/stripe/webhook
+```
+
+Para desarrollo local, usa Stripe CLI:
+
+```bash
+stripe listen --forward-to localhost:3001/api/stripe/webhook
+```
+
+Stripe CLI imprimira una linea con un secreto temporal parecido a:
+
+```text
+Ready! Your webhook signing secret is whsec_...
+```
+
+Copia ese valor en `STRIPE_WEBHOOK_SECRET` dentro de `.env` y reinicia el backend. No subas ese archivo al repositorio.
+
+El webhook soporta principalmente:
+
+```text
+checkout.session.completed
+```
+
+Tambien queda preparado para:
+
+```text
+payment_intent.succeeded
+```
+
+Los campos se leen preferentemente desde `metadata`. Si Stripe usa otros nombres, cambia:
+
+```text
+backend/config/stripeMapping.js
+```
+
+Ejemplo esperado:
+
+```json
+{
+  "metadata": {
+    "reservationNumber": "R002",
+    "fullName": "Anna Muller"
+  }
+}
+```
+
+Si falta `reservationNumber`, el evento se marca como incompleto en `diagnostics/stripe/` y no se inventa ninguna reserva.
+
+## Pruebas Manuales
+
+Crear una deteccion:
+
+```bash
+curl -X POST http://127.0.0.1:3001/api/test-detection \
+  -H "Content-Type: application/json" \
+  -d "{\"plate\":\"ZH987654\",\"camera\":\"Parking Sur\"}"
+```
+
+Crear un check-in de prueba con la misma logica posterior que Stripe:
+
+```bash
+curl -X POST http://127.0.0.1:3001/api/test-checkin \
+  -H "Content-Type: application/json" \
+  -d "{\"reservationCode\":\"R002\",\"fullName\":\"Anna Muller\"}"
+```
+
+Con los datos demo, `R002` no tiene matricula y sirve para probar matching temporal. Para probar match directo y borrado de evidencia autorizada, usa `BE123456`, que pertenece a `R001` con parking pagado.
 
 ## Reglas De Seguridad Firebase
 

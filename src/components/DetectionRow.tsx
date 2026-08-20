@@ -17,6 +17,35 @@ function formatTime(isoDate: string): string {
   }).format(new Date(isoDate));
 }
 
+function formatConfidence(confidence?: number): string {
+  if (confidence === undefined) {
+    return "";
+  }
+
+  return `${Math.round(confidence * 100)} %`;
+}
+
+function associationSummary(detection: Detection): string {
+  if (detection.associationStatus === "ambiguous") {
+    return `AMBIGUO - ${detection.associationCandidates?.length ?? 0} candidatos`;
+  }
+
+  if (detection.associationMethod === "plate") {
+    return `MATCH MATRICULA - ${formatConfidence(detection.confidence)}`;
+  }
+
+  if (detection.associationMethod === "temporal") {
+    return [
+      `MATCH TEMPORAL - ${formatConfidence(detection.confidence)}`,
+      detection.timeDifferenceMinutes !== undefined
+        ? `diferencia ${Math.round(detection.timeDifferenceMinutes)} min`
+        : "",
+    ].filter(Boolean).join(" - ");
+  }
+
+  return detection.associationStatus.toUpperCase();
+}
+
 export function DetectionRow({ detection, selected, onSelect }: DetectionRowProps) {
   return (
     <button
@@ -34,7 +63,12 @@ export function DetectionRow({ detection, selected, onSelect }: DetectionRowProp
       <span className="guest-cell">{detection.guestName || "-"}</span>
       <span className="meta-cell">{detection.reservationCode || "-"}</span>
       <StatusBadge value={detection.parkingStatus} tone={detection.parkingStatus} />
-      <StatusBadge value={detection.associationStatus} tone={detection.associationStatus} />
+      <span className="association-cell">
+        <StatusBadge
+          value={associationSummary(detection)}
+          tone={detection.associationStatus}
+        />
+      </span>
       <span className={`review-pill ${detection.reviewStatus}`}>
         {detection.reviewStatus.toUpperCase()}
       </span>

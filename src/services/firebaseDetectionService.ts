@@ -7,10 +7,16 @@ import {
   type DataSnapshot,
 } from "firebase/database";
 import { database } from "../lib/firebase";
-import type { Detection, ReviewStatus } from "../types/detection";
+import type {
+  AssociationCandidate,
+  Detection,
+  ReviewStatus,
+  StripeDiagnostic,
+} from "../types/detection";
 
 const detectionsRef = ref(database, "detections");
 const connectedRef = ref(database, ".info/connected");
+const stripeDiagnosticRef = ref(database, "diagnostics/stripe");
 
 function removeUndefinedValues<T extends Record<string, unknown>>(value: T): T {
   return Object.fromEntries(
@@ -55,6 +61,17 @@ export function listenToFirebaseConnection(
   });
 }
 
+export function listenToStripeDiagnostic(
+  onDiagnostic: (diagnostic: StripeDiagnostic) => void,
+  onError?: (error: Error) => void,
+): () => void {
+  return onValue(
+    stripeDiagnosticRef,
+    (snapshot) => onDiagnostic((snapshot.val() as StripeDiagnostic | null) ?? {}),
+    (error) => onError?.(error),
+  );
+}
+
 export async function createDetection(
   detection: Omit<Detection, "id">,
 ): Promise<Detection> {
@@ -75,5 +92,25 @@ export async function updateDetectionReviewStatus(
 ): Promise<void> {
   await update(ref(database, `detections/${detectionId}`), {
     reviewStatus,
+  });
+}
+
+export async function confirmTemporalAssociation(
+  detectionId: string,
+  candidate: AssociationCandidate,
+): Promise<void> {
+  await update(ref(database, `detections/${detectionId}`), {
+    associationStatus: "matched",
+    reviewStatus: "confirmed",
+    associationMethod: "temporal",
+    reservationCode: candidate.reservationCode,
+    room: candidate.room ?? null,
+    guestName: candidate.fullName,
+    guestEmail: candidate.guestEmail ?? null,
+    checkInAt: candidate.checkInAt,
+    timeDifferenceMinutes: candidate.timeDifferenceMinutes,
+    confidence: candidate.confidence,
+    parkingStatus: candidate.parkingStatus ?? "unknown",
+    associationCandidates: null,
   });
 }

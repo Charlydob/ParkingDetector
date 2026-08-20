@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const DEFAULT_EVIDENCE_DIR = "./backend/evidence";
@@ -58,8 +58,24 @@ export function createFileStorage(baseDir = process.env.EVIDENCE_DIR || DEFAULT_
     return relativeForFirebase(filePath);
   }
 
+  async function deleteEvidencePath(relativePath) {
+    if (!relativePath) {
+      return;
+    }
+
+    const filePath = path.resolve(process.cwd(), relativePath);
+    const allowedRoot = `${evidenceDir}${path.sep}`;
+
+    if (!filePath.startsWith(allowedRoot)) {
+      throw new Error(`Ruta de evidencia fuera de ${relativeForFirebase(evidenceDir)}.`);
+    }
+
+    await unlink(filePath);
+  }
+
   return {
     ensureDirectories,
     saveEvidenceBuffer,
+    deleteEvidencePath,
   };
 }

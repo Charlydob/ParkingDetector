@@ -14,7 +14,7 @@ const rawDemoReservations: Reservation[] = [
     reservationCode: "R002",
     name: "Anna Muller",
     email: "anna@example.com",
-    plate: "ZH987654",
+    plate: "",
     parkingValid: false,
     room: "204",
   },

@@ -289,7 +289,7 @@ button:disabled {
   grid-template-columns:
     minmax(88px, 1fr) minmax(68px, 0.8fr) minmax(110px, 1.1fr)
     minmax(44px, 0.5fr) minmax(96px, 1.1fr) minmax(64px, 0.7fr)
-    minmax(74px, 0.8fr) minmax(86px, 0.9fr) minmax(82px, 0.8fr) 28px;
+    minmax(74px, 0.8fr) minmax(150px, 1.25fr) minmax(82px, 0.8fr) 28px;
   min-width: 0;
 }
 
@@ -348,6 +348,10 @@ button:disabled {
   gap: 5px;
 }
 
+.association-cell {
+  min-width: 0;
+}
+
 .status-badge,
 .review-pill {
   border-radius: 999px;
@@ -357,7 +361,10 @@ button:disabled {
   justify-content: center;
   line-height: 1;
   min-height: 22px;
+  max-width: 100%;
+  overflow: hidden;
   padding: 6px 7px;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -515,6 +522,59 @@ button:disabled {
   gap: 8px;
   grid-template-columns: 1fr;
   padding: 12px;
+}
+
+.candidate-list {
+  border-top: 1px solid #edf1f5;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+
+.candidate-list h3 {
+  font-size: 0.86rem;
+  margin: 0;
+}
+
+.candidate-item {
+  align-items: center;
+  border: 1px solid #dde3ea;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 8px;
+}
+
+.candidate-item div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.candidate-item strong,
+.candidate-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.candidate-item span {
+  color: #667287;
+  font-size: 0.78rem;
+}
+
+.candidate-item button {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #cfd8e3;
+  border-radius: 8px;
+  color: #263244;
+  display: flex;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 8px;
 }
 
 .review-actions button {
