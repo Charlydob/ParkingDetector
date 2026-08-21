@@ -112,6 +112,12 @@ loadEnvFile();
 
 const [
   { createEventProcessor },
+  {
+    forceRefreshReservations,
+    getReservations,
+    getReservationDebug,
+    getReservationDiagnostics,
+  },
   { createFileStorage },
   { createFirebaseClient },
   { createFrigateClient },
@@ -119,6 +125,7 @@ const [
   { createProcessedEventsStore },
 ] = await Promise.all([
   import("./eventProcessor.js"),
+  import("./reservationService.js"),
   import("./fileStorage.js"),
   import("./firebaseClient.js"),
   import("./frigateClient.js"),
@@ -161,6 +168,12 @@ const eventProcessor = createEventProcessor({
     status.lastCheckInCreated = checkIn.createdAt;
   },
 });
+
+try {
+  await forceRefreshReservations();
+} catch {
+  // The diagnostics endpoints expose the reservation load error.
+}
 
 let polling = false;
 
@@ -209,7 +222,39 @@ const server = createServer(async (request, response) => {
         processedEvents: processedEvents.count(),
         processedStripeEvents: processedStripeEvents.count(),
         plateCooldownEntries: plateCooldown.count(),
+        ...getReservationDiagnostics(),
       });
+      return;
+    }
+
+    if (request.method === "GET" && request.url === "/api/reservations/debug") {
+      try {
+        await getReservations();
+      } catch {
+        sendJson(response, 500, {
+          ...getReservationDebug(),
+          ...getReservationDiagnostics(),
+        });
+        return;
+      }
+
+      sendJson(response, 200, getReservationDebug());
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/api/reservations/refresh") {
+      try {
+        await forceRefreshReservations();
+        sendJson(response, 200, {
+          ...getReservationDebug(),
+          ...getReservationDiagnostics(),
+        });
+      } catch {
+        sendJson(response, 500, {
+          ...getReservationDebug(),
+          ...getReservationDiagnostics(),
+        });
+      }
       return;
     }
 
