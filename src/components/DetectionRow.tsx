@@ -1,6 +1,7 @@
 import { Camera, Image } from "lucide-react";
 import { StatusBadge } from "./StatusBadge";
 import type { Detection } from "../types/detection";
+import { evidenceUrlFromPath } from "../services/backendApi";
 
 interface DetectionRowProps {
   detection: Detection;
@@ -9,7 +10,7 @@ interface DetectionRowProps {
 }
 
 function formatTime(isoDate: string): string {
-  return new Intl.DateTimeFormat("es-ES", {
+  return new Intl.DateTimeFormat("en-GB", {
     hour: "2-digit",
     minute: "2-digit",
     day: "2-digit",
@@ -27,32 +28,36 @@ function formatConfidence(confidence?: number): string {
 
 function associationSummary(detection: Detection): string {
   if (detection.associationStatus === "ambiguous") {
-    return `AMBIGUO - ${detection.associationCandidates?.length ?? 0} candidatos`;
+    return `Ambiguous · ${detection.associationCandidates?.length ?? 0}`;
   }
 
   if (detection.associationMethod === "plate") {
-    return `MATCH MATRICULA - ${formatConfidence(detection.confidence)}`;
+    return "Plate";
   }
 
   if (detection.associationMethod === "temporal") {
-    return [
-      `MATCH TEMPORAL - ${formatConfidence(detection.confidence)}`,
-      detection.timeDifferenceMinutes !== undefined
-        ? `diferencia ${Math.round(detection.timeDifferenceMinutes)} min`
-        : "",
-    ].filter(Boolean).join(" - ");
+    return "Temporal";
   }
 
-  return detection.associationStatus.toUpperCase();
+  return detection.associationStatus;
 }
 
 export function DetectionRow({ detection, selected, onSelect }: DetectionRowProps) {
+  const snapshotUrl = evidenceUrlFromPath(detection.localSnapshotPath) || detection.snapshotUrl;
+
   return (
     <button
       className={selected ? "detection-row selected" : "detection-row"}
       type="button"
       onClick={() => onSelect(detection)}
     >
+      <span className="thumb-cell">
+        {snapshotUrl ? (
+          <img src={snapshotUrl} alt="" loading="lazy" />
+        ) : (
+          <Image size={15} />
+        )}
+      </span>
       <span className="plate-cell">{detection.plate}</span>
       <span className="meta-cell">{formatTime(detection.detectedAt)}</span>
       <span className="camera-cell">
@@ -61,7 +66,6 @@ export function DetectionRow({ detection, selected, onSelect }: DetectionRowProp
       </span>
       <span className="meta-cell">{detection.room || "-"}</span>
       <span className="guest-cell">{detection.guestName || "-"}</span>
-      <span className="meta-cell">{detection.reservationCode || "-"}</span>
       <StatusBadge value={detection.parkingStatus} tone={detection.parkingStatus} />
       <span className="association-cell">
         <StatusBadge
@@ -69,11 +73,9 @@ export function DetectionRow({ detection, selected, onSelect }: DetectionRowProp
           tone={detection.associationStatus}
         />
       </span>
+      <span className="meta-cell">{formatConfidence(detection.confidence) || "-"}</span>
       <span className={`review-pill ${detection.reviewStatus}`}>
         {detection.reviewStatus.toUpperCase()}
-      </span>
-      <span className="media-indicator" title={detection.snapshotUrl ? "Snapshot" : "Sin snapshot"}>
-        <Image size={15} />
       </span>
     </button>
   );

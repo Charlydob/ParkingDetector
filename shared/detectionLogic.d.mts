@@ -10,6 +10,15 @@ export interface Reservation {
   plate: string;
   parkingValid: boolean;
   room: string;
+  arrivalAt?: string;
+  departureAt?: string;
+  checkInAt?: string;
+  checkOutAt?: string;
+  nights?: number;
+  reservationStatus?: string;
+  parkingStartAt?: string;
+  parkingEndAt?: string;
+  extraFields?: Record<string, unknown>;
 }
 
 export interface CheckInEvent {
@@ -21,6 +30,8 @@ export interface CheckInEvent {
   stripeEventId?: string;
   stripePaymentIntentId?: string;
   stripeCheckoutSessionId?: string;
+  paymentStatus?: string;
+  metadata?: Record<string, unknown>;
   room?: string;
   guestEmail?: string;
   plate?: string;

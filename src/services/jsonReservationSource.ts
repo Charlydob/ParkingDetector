@@ -7,12 +7,12 @@ export async function getJsonReservations(): Promise<Reservation[]> {
   const response = await fetch(jsonUrl);
 
   if (!response.ok) {
-    throw new Error(`No se pudo descargar JSON de reservas (${response.status}).`);
+    throw new Error(`Could not download reservation JSON (${response.status}).`);
   }
 
   const payload = await response.json();
   if (!Array.isArray(payload)) {
-    throw new Error("El JSON de reservas debe ser un array.");
+    throw new Error("Reservation JSON must be an array.");
   }
 
   return normalizeReservationRecords(payload);

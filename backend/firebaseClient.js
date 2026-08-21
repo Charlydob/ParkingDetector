@@ -1,5 +1,5 @@
 import { initializeApp, getApps } from "firebase/app";
-import { get, getDatabase, push, ref, set, update } from "firebase/database";
+import { get, getDatabase, push, ref, remove, set, update } from "firebase/database";
 
 const FIREBASE_DEFAULTS = {
   VITE_FIREBASE_API_KEY: "AIzaSyAZ3tJfi-wyW11OWJLpBx2I1rFKr9gTq7Q",
@@ -74,8 +74,52 @@ export function createFirebaseClient() {
     async getDetections() {
       return snapshotCollection(await get(ref(database, "detections")));
     },
+    async getDetection(detectionId) {
+      const snapshot = await get(ref(database, `detections/${detectionId}`));
+      const detection = snapshot.val();
+
+      return detection ? { ...detection, id: detectionId } : undefined;
+    },
     async updateDetection(detectionId, patch) {
       await update(ref(database, `detections/${detectionId}`), removeUndefinedValues(patch));
+    },
+    async deleteDetection(detectionId) {
+      await remove(ref(database, `detections/${detectionId}`));
+    },
+    async getPlateState(plate) {
+      const snapshot = await get(ref(database, `plateStates/${plate}`));
+      const plateState = snapshot.val();
+
+      return plateState ? { ...plateState, plate } : undefined;
+    },
+    async getPlateStates() {
+      return snapshotCollection(await get(ref(database, "plateStates")));
+    },
+    async updatePlateState(plate, patch) {
+      await update(ref(database, `plateStates/${plate}`), removeUndefinedValues(patch));
+    },
+    async releasePlateAssignment(plate) {
+      await update(ref(database, `plateStates/${plate}`), {
+        currentlyPresent: false,
+        activeReservationCode: null,
+        activeRoom: null,
+        activeGuestName: null,
+        associationStatus: null,
+        associationMethod: null,
+        confidence: null,
+        releasedAt: new Date().toISOString(),
+      });
+    },
+    async getPlateStateDiagnostics() {
+      const plateStates = snapshotCollection(await get(ref(database, "plateStates")));
+      const activePlates = plateStates.filter((plateState) => plateState.activeReservationCode);
+      const presentPlates = plateStates.filter((plateState) => plateState.currentlyPresent);
+
+      return {
+        activePlates: plateStates.length,
+        presentPlates: presentPlates.length,
+        assignedPlates: activePlates.length,
+      };
     },
     async createCheckIn(checkIn) {
       const newCheckInRef = push(ref(database, "checkIns"));

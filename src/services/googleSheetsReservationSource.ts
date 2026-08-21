@@ -7,12 +7,12 @@ export async function getGoogleSheetsReservations(): Promise<Reservation[]> {
   const sheetUrl = getEnvValue("VITE_GOOGLE_SHEET_URL");
 
   if (!sheetUrl) {
-    throw new Error("Falta configurar VITE_GOOGLE_SHEET_URL.");
+    throw new Error("VITE_GOOGLE_SHEET_URL is not configured.");
   }
 
   const response = await fetch(sheetUrl);
   if (!response.ok) {
-    throw new Error(`No se pudo descargar Google Sheets (${response.status}).`);
+    throw new Error(`Could not download Google Sheets CSV (${response.status}).`);
   }
 
   const csvText = await response.text();

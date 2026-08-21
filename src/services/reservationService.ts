@@ -1,6 +1,10 @@
 import { getDemoReservations } from "./demoReservationSource";
 import { getGoogleSheetsReservations } from "./googleSheetsReservationSource";
 import { getJsonReservations } from "./jsonReservationSource";
+import {
+  getBackendReservationDebug,
+  refreshBackendReservations,
+} from "./backendApi";
 import type {
   Reservation,
   ReservationLoadResult,
@@ -40,6 +44,19 @@ export async function loadReservationsWithDiagnostics(): Promise<ReservationLoad
   const source = getReservationSourceName();
 
   try {
+    const payload = await getBackendReservationDebug();
+
+    return {
+      reservations: payload.reservations,
+      source: payload.source,
+      updatedAt: payload.lastReservationRefreshAt || new Date().toISOString(),
+      error: payload.reservationLoadError || undefined,
+    };
+  } catch {
+    // GitHub Pages can still run without the local backend.
+  }
+
+  try {
     const reservations = await getReservations();
     return {
       reservations,
@@ -51,7 +68,22 @@ export async function loadReservationsWithDiagnostics(): Promise<ReservationLoad
       reservations: [],
       source,
       updatedAt: new Date().toISOString(),
-      error: error instanceof Error ? error.message : "Error desconocido al cargar reservas.",
+      error: error instanceof Error ? error.message : "Unknown error while loading reservations.",
     };
+  }
+}
+
+export async function refreshReservationsWithDiagnostics(): Promise<ReservationLoadResult> {
+  try {
+    const payload = await refreshBackendReservations();
+
+    return {
+      reservations: payload.reservations,
+      source: payload.source,
+      updatedAt: payload.lastReservationRefreshAt || new Date().toISOString(),
+      error: payload.reservationLoadError || undefined,
+    };
+  } catch {
+    return loadReservationsWithDiagnostics();
   }
 }

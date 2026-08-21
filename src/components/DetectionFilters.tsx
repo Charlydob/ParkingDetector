@@ -10,10 +10,10 @@ interface DetectionFiltersProps {
 }
 
 const filters: Array<{ value: DetectionFilter; label: string }> = [
-  { value: "all", label: "Todas" },
-  { value: "pending", label: "Pendientes" },
-  { value: "incidents", label: "Incidencias" },
-  { value: "paid", label: "Validas" },
+  { value: "all", label: "All" },
+  { value: "pending", label: "Pending" },
+  { value: "incidents", label: "Incidents" },
+  { value: "paid", label: "Paid" },
 ];
 
 export function DetectionFilters({
@@ -24,7 +24,7 @@ export function DetectionFilters({
 }: DetectionFiltersProps) {
   return (
     <div className="filters-bar">
-      <div className="segmented-control" role="tablist" aria-label="Filtro de detecciones">
+      <div className="segmented-control" role="tablist" aria-label="Detection filter">
         {filters.map((item) => (
           <button
             key={item.value}
@@ -42,7 +42,7 @@ export function DetectionFilters({
           type="search"
           value={search}
           onChange={(event) => onSearchChange(event.target.value)}
-          placeholder="Matricula, habitacion, huesped"
+          placeholder="License plate, room, guest"
         />
       </label>
     </div>

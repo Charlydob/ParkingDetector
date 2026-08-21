@@ -1,47 +1,58 @@
-import { Circle, Database, RefreshCw } from "lucide-react";
-import type { ReservationSourceName } from "../types/reservation";
+import { RefreshCw } from "lucide-react";
 
 interface HeaderProps {
-  connected: boolean;
-  source: ReservationSourceName;
-  pendingIncidents: number;
   onRefreshReservations: () => void;
   refreshingReservations: boolean;
+  activeView: "dashboard" | "system" | "settings";
+  onViewChange: (view: "dashboard" | "system" | "settings") => void;
 }
 
 export function Header({
-  connected,
-  source,
-  pendingIncidents,
   onRefreshReservations,
   refreshingReservations,
+  activeView,
+  onViewChange,
 }: HeaderProps) {
   return (
     <header className="app-header">
       <div>
         <h1>Parking Detector</h1>
-        <div className="status-strip">
-          <span className={connected ? "dot-label online" : "dot-label offline"}>
-            <Circle size={10} fill="currentColor" />
-            Firebase {connected ? "conectado" : "desconectado"}
-          </span>
-          <span className="dot-label neutral">
-            <Database size={14} />
-            Reservas: {source}
-          </span>
-          <span className="dot-label alert">{pendingIncidents} pendientes</span>
-        </div>
       </div>
-      <button
-        className="icon-button"
-        type="button"
-        onClick={onRefreshReservations}
-        title="Actualizar reservas"
-        aria-label="Actualizar reservas"
-        disabled={refreshingReservations}
-      >
-        <RefreshCw size={18} className={refreshingReservations ? "spinning" : ""} />
-      </button>
+      <div className="header-actions">
+        <div className="segmented-control compact" role="tablist" aria-label="Main view">
+          <button
+            type="button"
+            className={activeView === "dashboard" ? "active" : ""}
+            onClick={() => onViewChange("dashboard")}
+          >
+            Dashboard
+          </button>
+          <button
+            type="button"
+            className={activeView === "system" ? "active" : ""}
+            onClick={() => onViewChange("system")}
+          >
+            System
+          </button>
+          <button
+            type="button"
+            className={activeView === "settings" ? "active" : ""}
+            onClick={() => onViewChange("settings")}
+          >
+            Settings
+          </button>
+        </div>
+        <button
+          className="icon-button"
+          type="button"
+          onClick={onRefreshReservations}
+          title="Refresh reservations"
+          aria-label="Refresh reservations"
+          disabled={refreshingReservations}
+        >
+          <RefreshCw size={18} className={refreshingReservations ? "spinning" : ""} />
+        </button>
+      </div>
     </header>
   );
 }

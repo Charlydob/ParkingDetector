@@ -1,10 +1,36 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 
 const repositoryName = "ParkingDetector";
 const isGitHubPages = process.env.GITHUB_ACTIONS === "true";
 
 export default defineConfig({
-  plugins: [react()],
+  appType: "spa",
+  plugins: [
+    react(),
+    {
+      name: "checkin-demo-route",
+      configureServer(server) {
+        server.middlewares.use(async (request, response, next) => {
+          if (request.url === "/checkin-demo" || request.url === "/checkin-demo/") {
+            const indexPath = path.resolve(server.config.root, "index.html");
+            const html = await server.transformIndexHtml(
+              request.url,
+              readFileSync(indexPath, "utf8"),
+            );
+
+            response.statusCode = 200;
+            response.setHeader("Content-Type", "text/html");
+            response.end(html);
+            return;
+          }
+
+          next();
+        });
+      },
+    },
+  ],
   base: isGitHubPages ? `/${repositoryName}/` : "/",
 });

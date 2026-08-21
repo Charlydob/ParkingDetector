@@ -1,15 +1,26 @@
 import { useEffect, useMemo, useState } from "react";
+import { CheckInDemoPage } from "./components/CheckInDemoPage";
 import { DetectionDetail } from "./components/DetectionDetail";
 import {
   DetectionFilters,
   type DetectionFilter,
 } from "./components/DetectionFilters";
 import { DetectionList } from "./components/DetectionList";
-import { DemoDetectionForm } from "./components/DemoDetectionForm";
 import { Header } from "./components/Header";
+import { IntegrationsOverview } from "./components/IntegrationsOverview";
 import { ReservationDiagnostics } from "./components/ReservationDiagnostics";
+import { SettingsIntegrations } from "./components/SettingsIntegrations";
 import { StatsCards } from "./components/StatsCards";
 import { StripeDiagnostics } from "./components/StripeDiagnostics";
+import { TestingTools } from "./components/TestingTools";
+import {
+  deleteDetectionPermanently,
+  getBackendStatus,
+  getIntegrationSettings,
+  type BackendStatus,
+  type IntegrationSettings,
+} from "./services/backendApi";
+import { getBackendUrl } from "./services/backendConfigService";
 import {
   confirmTemporalAssociation,
   listenToDetections,
@@ -19,7 +30,7 @@ import {
 } from "./services/firebaseDetectionService";
 import {
   getReservationSourceName,
-  loadReservationsWithDiagnostics,
+  refreshReservationsWithDiagnostics,
 } from "./services/reservationService";
 import type {
   AssociationCandidate,
@@ -71,9 +82,10 @@ function filterDetections(
   });
 }
 
-export default function App() {
+function ParkingDetectorApp() {
   const [detections, setDetections] = useState<Detection[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
+  const [selectionTouched, setSelectionTouched] = useState(false);
   const [connected, setConnected] = useState(false);
   const [firebaseError, setFirebaseError] = useState("");
   const [notice, setNotice] = useState("");
@@ -83,6 +95,10 @@ export default function App() {
   const [stripeDiagnostic, setStripeDiagnostic] = useState<StripeDiagnostic>({});
   const [loadingReservations, setLoadingReservations] = useState(false);
   const [updatingReview, setUpdatingReview] = useState(false);
+  const [activeView, setActiveView] = useState<"dashboard" | "system" | "settings">("dashboard");
+  const [backendStatus, setBackendStatus] = useState<BackendStatus>();
+  const [integrationSettings, setIntegrationSettings] = useState<IntegrationSettings>();
+  const [backendUrl, setActiveBackendUrl] = useState(getBackendUrl());
 
   useEffect(() => {
     const unsubscribeConnection = listenToFirebaseConnection(setConnected);
@@ -104,32 +120,58 @@ export default function App() {
 
   async function refreshReservations() {
     setLoadingReservations(true);
-    const result = await loadReservationsWithDiagnostics();
+    const result = await refreshReservationsWithDiagnostics();
     setDiagnostics(result);
     setLoadingReservations(false);
   }
 
+  async function refreshBackendState() {
+    try {
+      const status = await getBackendStatus();
+      setBackendStatus(status);
+    } catch {
+      setBackendStatus(undefined);
+    }
+
+    try {
+      setIntegrationSettings(await getIntegrationSettings());
+    } catch {
+      setIntegrationSettings(undefined);
+    }
+  }
+
+  async function handleBackendUrlChange(url: string) {
+    setActiveBackendUrl(url);
+    await refreshBackendState();
+    await refreshReservations();
+  }
+
   useEffect(() => {
     void refreshReservations();
+    void refreshBackendState();
+
+    const intervalId = window.setInterval(() => {
+      void refreshBackendState();
+    }, 10000);
+
+    return () => window.clearInterval(intervalId);
   }, []);
 
   useEffect(() => {
-    if (!selectedId && detections[0]) {
+    if (!selectionTouched && !selectedId && detections[0]) {
       setSelectedId(detections[0].id);
     }
-  }, [detections, selectedId]);
+
+    if (selectedId && !detections.some((detection) => detection.id === selectedId)) {
+      setSelectedId(undefined);
+    }
+  }, [detections, selectedId, selectionTouched]);
 
   const selectedDetection = detections.find((detection) => detection.id === selectedId);
   const filteredDetections = useMemo(
     () => filterDetections(detections, filter, search),
     [detections, filter, search],
   );
-  const pendingIncidents = detections.filter(
-    (detection) =>
-      detection.reviewStatus === "pending" &&
-      (detection.parkingStatus !== "paid" || detection.associationStatus !== "matched"),
-  ).length;
-
   async function handleReviewChange(
     detectionId: string,
     reviewStatus: ReviewStatus,
@@ -137,9 +179,9 @@ export default function App() {
     setUpdatingReview(true);
     try {
       await updateDetectionReviewStatus(detectionId, reviewStatus);
-      setNotice("Revision actualizada.");
+      setNotice("Review status updated.");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "No se pudo actualizar la revision.");
+      setNotice(error instanceof Error ? error.message : "Could not update review status.");
     } finally {
       setUpdatingReview(false);
     }
@@ -152,9 +194,31 @@ export default function App() {
     setUpdatingReview(true);
     try {
       await confirmTemporalAssociation(detectionId, candidate);
-      setNotice("Asociacion temporal confirmada.");
+      setNotice("Temporal association confirmed.");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "No se pudo confirmar.");
+      setNotice(error instanceof Error ? error.message : "Could not confirm the association.");
+    } finally {
+      setUpdatingReview(false);
+    }
+  }
+
+  async function handleDeleteDetection(detection: Detection): Promise<void> {
+    if (!window.confirm("Delete this detection permanently?")) {
+      return;
+    }
+
+    setUpdatingReview(true);
+    try {
+      const result = await deleteDetectionPermanently(detection.id);
+      if (!result.success) {
+        throw new Error("Backend did not confirm deletion.");
+      }
+      setDetections((current) => current.filter((item) => item.id !== detection.id));
+      setSelectionTouched(true);
+      setSelectedId(undefined);
+      setNotice(`Detection ${detection.plate} deleted.`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not delete the detection.");
     } finally {
       setUpdatingReview(false);
     }
@@ -163,11 +227,10 @@ export default function App() {
   return (
     <main className="app-shell">
       <Header
-        connected={connected}
-        source={diagnostics.source}
-        pendingIncidents={pendingIncidents}
         onRefreshReservations={refreshReservations}
         refreshingReservations={loadingReservations}
+        activeView={activeView}
+        onViewChange={setActiveView}
       />
 
       {(notice || firebaseError) && (
@@ -176,44 +239,88 @@ export default function App() {
         </div>
       )}
 
-      <StatsCards detections={detections} />
+      {activeView === "dashboard" ? (
+        <>
+          <StatsCards detections={detections} />
 
-      <div className="workspace-grid">
-        <div className="main-column">
-          <DetectionFilters
-            filter={filter}
-            search={search}
-            onFilterChange={setFilter}
-            onSearchChange={setSearch}
+          <div className="workspace-grid">
+            <div className="main-column">
+              <DetectionFilters
+                filter={filter}
+                search={search}
+                onFilterChange={setFilter}
+                onSearchChange={setSearch}
+              />
+              <DetectionList
+                detections={filteredDetections}
+                selectedId={selectedId}
+                onSelect={(detection) => {
+                  setSelectionTouched(true);
+                  setSelectedId(detection.id);
+                }}
+              />
+            </div>
+            <div className="detail-column">
+              <DetectionDetail
+                detection={selectedDetection}
+                onReviewChange={handleReviewChange}
+                onConfirmCandidate={handleConfirmCandidate}
+                onDelete={handleDeleteDetection}
+                updating={updatingReview}
+              />
+            </div>
+          </div>
+        </>
+      ) : activeView === "system" ? (
+        <section className="system-grid">
+          <IntegrationsOverview
+            backendStatus={backendStatus}
+            firebaseConnected={connected}
           />
-          <DetectionList
-            detections={filteredDetections}
-            selectedId={selectedId}
-            onSelect={(detection) => setSelectedId(detection.id)}
-          />
-        </div>
-        <div className="side-column">
-          <DemoDetectionForm
-            onCreated={(detection) => {
-              setSelectedId(detection.id);
-              setNotice(`Deteccion ${detection.plate} guardada.`);
-            }}
-            onError={setNotice}
-          />
-          <DetectionDetail
-            detection={selectedDetection}
-            onReviewChange={handleReviewChange}
-            onConfirmCandidate={handleConfirmCandidate}
-            updating={updatingReview}
-          />
-          <StripeDiagnostics diagnostic={stripeDiagnostic} />
           <ReservationDiagnostics
             diagnostics={diagnostics}
-            onRefresh={refreshReservations}
+            backendStatus={backendStatus}
+            onRefresh={async () => {
+              await refreshReservations();
+              await refreshBackendState();
+            }}
             loading={loadingReservations}
           />
-        </div>
-      </div>
+          <StripeDiagnostics
+            diagnostic={stripeDiagnostic}
+            stripeConfigured={backendStatus?.stripeConfigured}
+          />
+          <TestingTools
+            onDetectionCreated={(detection) => {
+              setSelectionTouched(true);
+              setSelectedId(detection.id);
+              setNotice(`Detection ${detection.plate} saved.`);
+            }}
+            onNotice={setNotice}
+          />
+        </section>
+      ) : (
+        <SettingsIntegrations
+          settings={integrationSettings}
+          backendStatus={backendStatus}
+          backendUrl={backendUrl}
+          onBackendUrlChange={handleBackendUrlChange}
+          onSettingsChange={setIntegrationSettings}
+          onNotice={setNotice}
+          onRefreshReservations={async () => {
+            await refreshReservations();
+            await refreshBackendState();
+          }}
+        />
+      )}
     </main>
+  );
+}
+
+export default function App() {
+  return window.location.pathname === "/checkin-demo" ? (
+    <CheckInDemoPage />
+  ) : (
+    <ParkingDetectorApp />
   );
 }

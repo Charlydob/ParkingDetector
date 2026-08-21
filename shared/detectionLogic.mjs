@@ -23,7 +23,7 @@ export function getTimeDifferenceMinutes(leftIsoDate, rightIsoDate) {
     return undefined;
   }
 
-  return Math.abs(left - right) / 60000;
+  return (right - left) / 60000;
 }
 
 export function calculateTemporalConfidence(timeDifferenceMinutes, nearbyCandidateCount = 1) {
@@ -86,7 +86,9 @@ export function findTemporalCandidates(detection, checkIns, options = {}) {
     }))
     .filter(
       ({ timeDifferenceMinutes }) =>
-        timeDifferenceMinutes !== undefined && timeDifferenceMinutes <= windowMinutes,
+        timeDifferenceMinutes !== undefined &&
+        timeDifferenceMinutes >= 0 &&
+        timeDifferenceMinutes <= windowMinutes,
     )
     .sort((left, right) => left.timeDifferenceMinutes - right.timeDifferenceMinutes);
 

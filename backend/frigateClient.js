@@ -1,4 +1,4 @@
-const DEFAULT_FRIGATE_BASE_URL = "https://localhost:8971";
+const DEFAULT_FRIGATE_BASE_URL = "http://localhost:5000";
 const DEFAULT_EVENT_LIMIT = 50;
 const DEFAULT_LOOKBACK_MS = 5 * 60 * 1000;
 
@@ -136,7 +136,24 @@ export function createFrigateClient({
     baseUrl: normalizedBaseUrl,
     async testConnection() {
       await request("/api/events?limit=1");
-      return true;
+      return {
+        connected: true,
+        version: await this.getVersion(),
+      };
+    },
+    async getVersion() {
+      try {
+        const response = await request("/api/version", { optional: true });
+
+        if (!response) {
+          return null;
+        }
+
+        const payload = await response.json();
+        return typeof payload.version === "string" ? payload.version : null;
+      } catch {
+        return null;
+      }
     },
     getRecentCarEvents,
     getSnapshotBuffer,

@@ -7,6 +7,7 @@ dist
 backend/data/processed-events.json
 backend/data/processed-stripe-events.json
 backend/data/plate-cooldown.json
+backend/data/local-settings.json
 backend/data/*.log
 backend/data/*.err.log
 backend/data/test-*.json

@@ -33,6 +33,147 @@ export function createEventProcessor({
     return parseConfigNumber(process.env.PLATE_COOLDOWN_MINUTES, 15);
   }
 
+  function getPlatePresenceTimeoutMinutes() {
+    return parseConfigNumber(process.env.PLATE_PRESENCE_TIMEOUT_MINUTES, 30);
+  }
+
+  function getPositiveDate(value) {
+    const timestamp = new Date(value).getTime();
+    return Number.isFinite(timestamp) ? timestamp : undefined;
+  }
+
+  function isPresenceExpired(plateState, detectedAt) {
+    if (!plateState?.currentlyPresent || !plateState.lastSeenAt) {
+      return false;
+    }
+
+    const detectedTime = getPositiveDate(detectedAt);
+    const lastSeenTime = getPositiveDate(plateState.lastSeenAt);
+
+    if (detectedTime === undefined || lastSeenTime === undefined) {
+      return false;
+    }
+
+    return detectedTime - lastSeenTime > getPlatePresenceTimeoutMinutes() * 60000;
+  }
+
+  function getAssociationStatePatch(detection) {
+    if (detection.associationStatus !== "matched") {
+      return {
+        associationStatus: detection.associationStatus,
+        associationMethod: detection.associationMethod,
+        confidence: detection.confidence,
+      };
+    }
+
+    return {
+      activeReservationCode: detection.reservationCode,
+      activeRoom: detection.room,
+      activeGuestName: detection.guestName,
+      associationStatus: detection.associationStatus,
+      associationMethod: detection.associationMethod,
+      confidence: detection.confidence,
+    };
+  }
+
+  async function updatePlateStateFromDetection(detection) {
+    const plate = normalizePlate(detection.plate);
+    if (!plate) {
+      return;
+    }
+
+    const currentState = await firebaseClient.getPlateState(plate);
+    await firebaseClient.updatePlateState(plate, {
+      plate,
+      currentlyPresent: true,
+      firstSeenAt: currentState?.firstSeenAt || detection.detectedAt,
+      lastSeenAt: detection.detectedAt,
+      lastDetectionId: detection.id || currentState?.lastDetectionId,
+      ...getAssociationStatePatch(detection),
+    });
+  }
+
+  async function updatePlateStateFromAssociation(detection) {
+    const plate = normalizePlate(detection.plate);
+    if (!plate) {
+      return;
+    }
+
+    const currentState = await firebaseClient.getPlateState(plate);
+    if (
+      currentState?.activeReservationCode &&
+      currentState.activeReservationCode !== detection.reservationCode
+    ) {
+      console.log(
+        `[PlateState] ${plate} already assigned to ${currentState.activeReservationCode} - temporal reassignment ignored`,
+      );
+      return;
+    }
+
+    await firebaseClient.updatePlateState(plate, {
+      plate,
+      currentlyPresent: currentState?.currentlyPresent ?? true,
+      firstSeenAt: currentState?.firstSeenAt || detection.detectedAt,
+      lastSeenAt: currentState?.lastSeenAt || detection.detectedAt,
+      lastDetectionId: detection.id || currentState?.lastDetectionId,
+      ...getAssociationStatePatch(detection),
+    });
+  }
+
+  async function shouldIgnoreDetectionForPlateState(plate, detectedAt) {
+    const plateState = await firebaseClient.getPlateState(plate);
+
+    if (!plateState) {
+      return false;
+    }
+
+    if (isPresenceExpired(plateState, detectedAt)) {
+      await firebaseClient.updatePlateState(plate, {
+        currentlyPresent: false,
+      });
+
+      if (!plateState.activeReservationCode) {
+        return false;
+      }
+    }
+
+    if (plateState.currentlyPresent && !isPresenceExpired(plateState, detectedAt)) {
+      await firebaseClient.updatePlateState(plate, {
+        lastSeenAt: detectedAt,
+      });
+      console.log(`[PlateState] ${plate} already present - event ignored`);
+      return true;
+    }
+
+    if (plateState.activeReservationCode) {
+      await firebaseClient.updatePlateState(plate, {
+        currentlyPresent: true,
+        lastSeenAt: detectedAt,
+        seenAgainAt: detectedAt,
+      });
+      console.log(
+        `[PlateState] ${plate} already assigned to ${plateState.activeReservationCode} - event ignored`,
+      );
+      return true;
+    }
+
+    return false;
+  }
+
+  async function refreshExpiredPlateStates(now = new Date().toISOString()) {
+    const plateStates = await firebaseClient.getPlateStates();
+
+    for (const plateState of plateStates) {
+      if (!isPresenceExpired(plateState, now)) {
+        continue;
+      }
+
+      await firebaseClient.updatePlateState(plateState.plate || plateState.id, {
+        currentlyPresent: false,
+      });
+    }
+  }
+
   function findReservationByCode(reservations, reservationCode) {
     const normalizedCode = String(reservationCode ?? "").trim().toLowerCase();
     return reservations.find(
@@ -83,6 +224,18 @@ export function createEventProcessor({
         continue;
       }
 
+      const plate = normalizePlate(detection.plate);
+      const plateState = plate ? await firebaseClient.getPlateState(plate) : undefined;
+      if (
+        plateState?.activeReservationCode &&
+        plateState.activeReservationCode !== detection.reservationCode
+      ) {
+        console.log(
+          `[PlateState] ${plate} already assigned to ${plateState.activeReservationCode} - temporal matching skipped`,
+        );
+        continue;
+      }
+
       const updated = applyTemporalAssociation(detection, checkIns, options);
 
       if (
@@ -108,6 +261,7 @@ export function createEventProcessor({
       });
 
       await clearAuthorizedEvidence(updated);
+      await updatePlateStateFromAssociation(updated);
     }
   }
 
@@ -130,6 +284,7 @@ export function createEventProcessor({
     const detectionPayload = await buildDetectionWithTemporalMatching(input, reservations);
     const createdDetection = await firebaseClient.createDetection(detectionPayload);
     const detection = await clearAuthorizedEvidence(createdDetection);
+    await updatePlateStateFromDetection(detection);
 
     if (detectionPayload.associationStatus === "matched") {
       console.log(
@@ -147,6 +302,10 @@ export function createEventProcessor({
   async function processDetectionWithCooldown(input) {
     const plate = normalizePlate(input.plate);
     const detectedAt = input.detectedAt || new Date().toISOString();
+
+    if (await shouldIgnoreDetectionForPlateState(plate, detectedAt)) {
+      return undefined;
+    }
 
     if (
       plateCooldown?.isCoolingDown(
@@ -179,25 +338,27 @@ export function createEventProcessor({
         lastStripeEventId: input.stripeEventId,
         lastReservationNumber: "",
         lastStatus: "invalid event",
-        lastError: "Falta reservationNumber.",
+        lastError: "reservationNumber is missing.",
       });
-      throw new Error("No se puede crear check-in sin reservationNumber.");
+      throw new Error("Cannot create a check-in without reservationNumber.");
     }
 
     const reservations = await getReservations();
     const reservation = findReservationByCode(reservations, reservationCode);
     const checkIn = await firebaseClient.createCheckIn({
       reservationCode,
-      fullName: reservation?.name || fullName || "Sin nombre",
+      fullName: reservation?.name || fullName || "No name",
       checkInAt: input.checkInAt || now,
       source: input.source || "stripe",
       stripeEventId: input.stripeEventId,
       stripePaymentIntentId: input.stripePaymentIntentId,
       stripeCheckoutSessionId: input.stripeCheckoutSessionId,
       room: reservation?.room,
-      guestEmail: reservation?.email,
+      guestEmail: reservation?.email || input.email,
       plate: reservation?.plate,
       parkingValid: reservation?.parkingValid,
+      paymentStatus: input.paymentStatus,
+      metadata: input.metadata,
       createdAt: now,
     });
 
@@ -231,6 +392,12 @@ export function createEventProcessor({
 
     const detectedAt = getEventDetectedAt(event);
     const camera = event.camera || "unknown";
+
+    if (await shouldIgnoreDetectionForPlateState(plate, detectedAt)) {
+      await processedEvents.mark(eventId);
+      await plateCooldown?.mark(plate, detectedAt);
+      return undefined;
+    }
 
     if (
       plateCooldown?.isCoolingDown(
@@ -303,5 +470,9 @@ export function createEventProcessor({
     processDetectionWithCooldown,
     processCheckInEvent,
     processFrigateEvent,
+    refreshExpiredPlateStates,
+    releasePlateAssignment(plate) {
+      return firebaseClient.releasePlateAssignment(normalizePlate(plate));
+    },
   };
 }

@@ -70,12 +70,31 @@ export function createFileStorage(baseDir = process.env.EVIDENCE_DIR || DEFAULT_
       throw new Error(`Ruta de evidencia fuera de ${relativeForFirebase(evidenceDir)}.`);
     }
 
-    await unlink(filePath);
+    try {
+      await unlink(filePath);
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+
+  function getEvidenceFilePath(kind, filename) {
+    const directory = kind === "clip" ? clipsDir : snapshotsDir;
+    const filePath = path.resolve(directory, path.basename(filename));
+    const allowedRoot = `${directory}${path.sep}`;
+
+    if (!filePath.startsWith(allowedRoot)) {
+      throw new Error("Evidence path is outside the evidence directory.");
+    }
+
+    return filePath;
   }
 
   return {
     ensureDirectories,
     saveEvidenceBuffer,
     deleteEvidencePath,
+    getEvidenceFilePath,
   };
 }

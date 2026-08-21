@@ -1,6 +1,8 @@
 import { Check, Clock3, X } from "lucide-react";
+import { useEffect, useState } from "react";
 import { StatusBadge } from "./StatusBadge";
 import type { AssociationCandidate, Detection, ReviewStatus } from "../types/detection";
+import { evidenceUrlFromPath } from "../services/backendApi";
 
 interface DetectionDetailProps {
   detection?: Detection;
@@ -9,11 +11,12 @@ interface DetectionDetailProps {
     detectionId: string,
     candidate: AssociationCandidate,
   ) => Promise<void>;
+  onDelete: (detection: Detection) => Promise<void>;
   updating: boolean;
 }
 
 function formatDateTime(isoDate: string): string {
-  return new Intl.DateTimeFormat("es-ES", {
+  return new Intl.DateTimeFormat("en-GB", {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(isoDate));
@@ -23,15 +26,24 @@ export function DetectionDetail({
   detection,
   onReviewChange,
   onConfirmCandidate,
+  onDelete,
   updating,
 }: DetectionDetailProps) {
+  const [snapshotFailed, setSnapshotFailed] = useState(false);
+  const [videoFailed, setVideoFailed] = useState(false);
+
+  useEffect(() => {
+    setSnapshotFailed(false);
+    setVideoFailed(false);
+  }, [detection?.id]);
+
   if (!detection) {
     return (
       <aside className="panel detail-panel">
         <div className="section-heading">
-          <h2>Detalle</h2>
+          <h2>Detection Detail</h2>
         </div>
-        <div className="empty-state">Selecciona una deteccion</div>
+        <div className="empty-state">Select a detection</div>
       </aside>
     );
   }
@@ -41,47 +53,73 @@ export function DetectionDetail({
     label: string;
     icon: typeof Check;
   }> = [
-    { value: "confirmed", label: "Confirmar incidencia", icon: Check },
-    { value: "dismissed", label: "Descartar", icon: X },
-    { value: "pending", label: "Marcar pendiente", icon: Clock3 },
+    { value: "confirmed", label: "Confirm Incident", icon: Check },
+    { value: "dismissed", label: "Dismiss", icon: X },
+    { value: "pending", label: "Mark Pending", icon: Clock3 },
   ];
+  const snapshotUrl = evidenceUrlFromPath(detection.localSnapshotPath) || detection.snapshotUrl;
+  const videoUrl = evidenceUrlFromPath(detection.localVideoPath) || detection.videoUrl;
+  const hasLocalEvidence = Boolean(detection.localSnapshotPath || detection.localVideoPath);
 
   return (
     <aside className="panel detail-panel">
       <div className="section-heading">
-        <h2>Detalle</h2>
+        <h2>Detection Detail</h2>
         <span>{detection.plate}</span>
       </div>
 
-      {detection.snapshotUrl ? (
-        <img className="snapshot" src={detection.snapshotUrl} alt={`Snapshot ${detection.plate}`} />
+      {snapshotUrl && !snapshotFailed ? (
+        <img
+          className="snapshot"
+          src={snapshotUrl}
+          alt={`Snapshot ${detection.plate}`}
+          onError={() => setSnapshotFailed(true)}
+        />
       ) : (
-        <div className="snapshot placeholder">Sin snapshot</div>
+        <div className="snapshot placeholder">
+          {hasLocalEvidence ? "Evidence file not available" : "No snapshot available"}
+        </div>
       )}
 
-      {detection.videoUrl && (
-        <video className="video-preview" src={detection.videoUrl} controls preload="metadata" />
+      {videoUrl && !videoFailed ? (
+        <video
+          className="video-preview"
+          src={videoUrl}
+          controls
+          preload="metadata"
+          onError={() => setVideoFailed(true)}
+        />
+      ) : (
+        hasLocalEvidence && (
+          <div className="video-preview placeholder">
+            Evidence file not available
+          </div>
+        )
+      )}
+
+      {hasLocalEvidence && (
+        <div className="local-evidence-note">Local evidence stored on the hotel server</div>
       )}
 
       <dl className="detail-grid">
         <div>
-          <dt>Fecha</dt>
+          <dt>Date</dt>
           <dd>{formatDateTime(detection.detectedAt)}</dd>
         </div>
         <div>
-          <dt>Camara</dt>
+          <dt>Camera</dt>
           <dd>{detection.camera}</dd>
         </div>
         <div>
-          <dt>Reserva</dt>
+          <dt>Reservation</dt>
           <dd>{detection.reservationCode || "-"}</dd>
         </div>
         <div>
-          <dt>Habitacion</dt>
+          <dt>Room</dt>
           <dd>{detection.room || "-"}</dd>
         </div>
         <div>
-          <dt>Huesped</dt>
+          <dt>Guest</dt>
           <dd>{detection.guestName || "-"}</dd>
         </div>
         <div>
@@ -93,11 +131,11 @@ export function DetectionDetail({
           <dd>{detection.checkInAt ? formatDateTime(detection.checkInAt) : "-"}</dd>
         </div>
         <div>
-          <dt>Metodo</dt>
+          <dt>Method</dt>
           <dd>{detection.associationMethod || "-"}</dd>
         </div>
         <div>
-          <dt>Confianza</dt>
+          <dt>Confidence</dt>
           <dd>
             {detection.confidence !== undefined
               ? `${Math.round(detection.confidence * 100)} %`
@@ -105,7 +143,7 @@ export function DetectionDetail({
           </dd>
         </div>
         <div>
-          <dt>Diferencia</dt>
+          <dt>Difference</dt>
           <dd>
             {detection.timeDifferenceMinutes !== undefined
               ? `${Math.round(detection.timeDifferenceMinutes)} min`
@@ -119,7 +157,7 @@ export function DetectionDetail({
           </dd>
         </div>
         <div>
-          <dt>Asociacion</dt>
+          <dt>Association</dt>
           <dd>
             <StatusBadge
               value={detection.associationStatus}
@@ -133,7 +171,7 @@ export function DetectionDetail({
         detection.associationCandidates &&
         detection.associationCandidates.length > 0 && (
           <div className="candidate-list">
-            <h3>Candidatos</h3>
+            <h3>Candidates</h3>
             {detection.associationCandidates.map((candidate) => (
               <div
                 key={`${candidate.reservationCode}-${candidate.checkInAt}`}
@@ -142,7 +180,7 @@ export function DetectionDetail({
                 <div>
                   <strong>{candidate.fullName}</strong>
                   <span>
-                    {candidate.reservationCode} - Hab. {candidate.room || "-"} -{" "}
+                    {candidate.reservationCode} - Room {candidate.room || "-"} -{" "}
                     {Math.round(candidate.confidence * 100)} % -{" "}
                     {Math.round(candidate.timeDifferenceMinutes)} min
                   </span>
@@ -153,7 +191,7 @@ export function DetectionDetail({
                   disabled={updating}
                 >
                   <Check size={15} />
-                  Seleccionar
+                  Select
                 </button>
               </div>
             ))}
@@ -173,6 +211,15 @@ export function DetectionDetail({
             {label}
           </button>
         ))}
+        <button
+          type="button"
+          className="danger"
+          onClick={() => onDelete(detection)}
+          disabled={updating}
+        >
+          <X size={16} />
+          Delete Detection
+        </button>
       </div>
     </aside>
   );

@@ -1,11 +1,10 @@
 import type { Detection, FrigateDetectionInput } from "../types/detection";
-
-const backendBaseUrl = import.meta.env.VITE_BACKEND_URL || "http://127.0.0.1:3001";
+import { getBackendUrl } from "./backendConfigService";
 
 export async function processFrigateDetection(
   input: FrigateDetectionInput,
 ): Promise<Detection> {
-  const response = await fetch(`${backendBaseUrl}/api/test-detection`, {
+  const response = await fetch(`${getBackendUrl()}/api/test-detection`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -14,7 +13,7 @@ export async function processFrigateDetection(
   });
 
   if (!response.ok) {
-    throw new Error(`No se pudo simular la deteccion (${response.status}).`);
+    throw new Error(`Could not simulate the detection (${response.status}).`);
   }
 
   const payload = await response.json() as {
@@ -23,7 +22,7 @@ export async function processFrigateDetection(
   };
 
   if (payload.ignoredByCooldown || !payload.detection) {
-    throw new Error("Deteccion ignorada por cooldown de matricula.");
+    throw new Error("Detection ignored by license plate cooldown.");
   }
 
   return payload.detection;

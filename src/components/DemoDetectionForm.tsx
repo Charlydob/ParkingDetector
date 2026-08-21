@@ -1,4 +1,4 @@
-import { Car, Play } from "lucide-react";
+import { Play } from "lucide-react";
 import { useMemo, useState } from "react";
 import { demoDetectionInputs } from "../data/demoDetections";
 import { processFrigateDetection } from "../services/frigateDetectionService";
@@ -24,7 +24,7 @@ export function DemoDetectionForm({ onCreated, onError }: DemoDetectionFormProps
     event.preventDefault();
 
     if (!plate.trim() || !camera.trim()) {
-      onError("Indica matricula y camara.");
+      onError("Enter a license plate and camera.");
       return;
     }
 
@@ -38,7 +38,7 @@ export function DemoDetectionForm({ onCreated, onError }: DemoDetectionFormProps
       });
       onCreated(detection);
     } catch (error) {
-      onError(error instanceof Error ? error.message : "No se pudo crear la deteccion.");
+      onError(error instanceof Error ? error.message : "Could not create the detection.");
     } finally {
       setSubmitting(false);
     }
@@ -51,18 +51,13 @@ export function DemoDetectionForm({ onCreated, onError }: DemoDetectionFormProps
   }
 
   return (
-    <section className="panel demo-panel">
-      <div className="section-heading">
-        <h2>Simular deteccion</h2>
-        <Car size={18} />
-      </div>
       <form onSubmit={handleSubmit} className="demo-form">
         <label>
-          <span>Matricula</span>
+          <span>License Plate</span>
           <input value={plate} onChange={(event) => setPlate(event.target.value)} />
         </label>
         <label>
-          <span>Camara</span>
+          <span>Camera</span>
           <input value={camera} onChange={(event) => setCamera(event.target.value)} />
         </label>
         <label>
@@ -82,9 +77,8 @@ export function DemoDetectionForm({ onCreated, onError }: DemoDetectionFormProps
         </div>
         <button className="primary-button" type="submit" disabled={submitting}>
           <Play size={16} fill="currentColor" />
-          {submitting ? "Guardando" : "Simular deteccion"}
+          {submitting ? "Saving" : "Simulate Detection"}
         </button>
       </form>
-    </section>
   );
 }

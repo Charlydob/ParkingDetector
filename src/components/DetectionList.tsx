@@ -11,21 +11,21 @@ export function DetectionList({ detections, selectedId, onSelect }: DetectionLis
   return (
     <section className="panel detections-panel">
       <div className="section-heading">
-        <h2>Detecciones</h2>
+        <h2>Recent Detections</h2>
         <span>{detections.length}</span>
       </div>
       <div className="detection-table">
         <div className="table-head">
-          <span>Matricula</span>
-          <span>Hora</span>
-          <span>Camara</span>
-          <span>Hab.</span>
-          <span>Huesped</span>
-          <span>Reserva</span>
-          <span>Parking</span>
-          <span>Asoc.</span>
-          <span>Revision</span>
           <span></span>
+          <span>License Plate</span>
+          <span>Time</span>
+          <span>Camera</span>
+          <span>Room</span>
+          <span>Guest</span>
+          <span>Parking</span>
+          <span>Association</span>
+          <span>Confidence</span>
+          <span>Review</span>
         </div>
         <div className="table-body">
           {detections.length > 0 ? (
@@ -38,7 +38,7 @@ export function DetectionList({ detections, selectedId, onSelect }: DetectionLis
               />
             ))
           ) : (
-            <div className="empty-state">Sin detecciones</div>
+            <div className="empty-state">No detections yet</div>
           )}
         </div>
       </div>

@@ -26,30 +26,30 @@ export function StatsCards({ detections }: StatsCardsProps) {
   };
 
   return (
-    <section className="stats-grid" aria-label="Estadisticas">
+    <section className="stats-grid" aria-label="Detection statistics">
       <article className="stat-item">
         <CalendarClock size={18} />
-        <span>Hoy</span>
+        <span>Today</span>
         <strong>{stats.today}</strong>
       </article>
       <article className="stat-item paid">
         <CheckCircle2 size={18} />
-        <span>Valido</span>
+        <span>Paid</span>
         <strong>{stats.paid}</strong>
       </article>
       <article className="stat-item unpaid">
         <AlertTriangle size={18} />
-        <span>No pagado</span>
+        <span>Unpaid</span>
         <strong>{stats.unpaid}</strong>
       </article>
       <article className="stat-item unknown">
         <HelpCircle size={18} />
-        <span>Desconocido</span>
+        <span>Unknown</span>
         <strong>{stats.unknown}</strong>
       </article>
       <article className="stat-item pending">
         <Clock3 size={18} />
-        <span>Pendiente</span>
+        <span>Pending</span>
         <strong>{stats.pending}</strong>
       </article>
     </section>

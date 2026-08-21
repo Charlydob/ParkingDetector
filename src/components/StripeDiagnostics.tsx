@@ -2,6 +2,7 @@ import type { StripeDiagnostic } from "../types/detection";
 
 interface StripeDiagnosticsProps {
   diagnostic: StripeDiagnostic;
+  stripeConfigured?: boolean;
 }
 
 function formatMaybeDate(value?: string): string {
@@ -9,35 +10,37 @@ function formatMaybeDate(value?: string): string {
     return "-";
   }
 
-  return new Intl.DateTimeFormat("es-ES", {
+  return new Intl.DateTimeFormat("en-GB", {
     dateStyle: "short",
     timeStyle: "medium",
   }).format(new Date(value));
 }
 
-export function StripeDiagnostics({ diagnostic }: StripeDiagnosticsProps) {
+export function StripeDiagnostics({ diagnostic, stripeConfigured }: StripeDiagnosticsProps) {
   return (
     <section className="panel stripe-panel">
       <div className="section-heading">
         <h2>Stripe</h2>
-        <span>{diagnostic.lastStatus || "sin eventos"}</span>
+        <span>{diagnostic.lastStatus || "No events"}</span>
       </div>
       <div className="diagnostic-grid">
-        <span>Ultimo evento</span>
+        <span>Configuration</span>
+        <strong>{stripeConfigured ? "Configured" : "Not configured"}</strong>
+        <span>Last Event</span>
         <strong>{formatMaybeDate(diagnostic.lastEventReceivedAt)}</strong>
         <span>Check-in</span>
         <strong>{formatMaybeDate(diagnostic.lastCheckInCreatedAt)}</strong>
-        <span>Reserva</span>
+        <span>Reservation</span>
         <strong>{diagnostic.lastReservationNumber || "-"}</strong>
-        <span>Huesped</span>
+        <span>Guest</span>
         <strong>{diagnostic.lastFullName || "-"}</strong>
-        <span>Estado</span>
+        <span>Status</span>
         <strong className={diagnostic.lastError ? "error-text" : ""}>
           {diagnostic.lastStatus || "-"}
         </strong>
         <span>Error</span>
         <strong className={diagnostic.lastError ? "error-text" : ""}>
-          {diagnostic.lastError || "Sin errores"}
+          {diagnostic.lastError || "No errors"}
         </strong>
       </div>
     </section>
