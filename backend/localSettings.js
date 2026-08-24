@@ -3,11 +3,12 @@ import path from "node:path";
 import { RESERVATION_COLUMN_MAPPING } from "../shared/reservationMapping.mjs";
 import { parseConfigNumber } from "../shared/detectionLogic.mjs";
 
-const SETTINGS_PATH = path.resolve(process.cwd(), "backend/data/local-settings.json");
+const DATA_DIR = path.resolve(process.cwd(), process.env.DATA_DIR || "backend/data");
+const SETTINGS_PATH = path.join(DATA_DIR, "local-settings.json");
 const VALID_SOURCES = new Set(["demo", "googleSheets", "json", "reservationWebhook"]);
 const DEFAULT_FRIGATE_BASE_URL = "http://localhost:5000";
 const DEFAULT_POLL_INTERVAL_MS = 5000;
-const DEFAULT_RESERVATION_WEBHOOK_HEADER = "x-parking-detector-secret";
+const DEFAULT_RESERVATION_WEBHOOK_HEADER = "x-hotel-automation-secret";
 
 let settings = {};
 

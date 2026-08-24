@@ -3,7 +3,8 @@ import path from "node:path";
 
 const DEFAULT_PROCESSED_EVENTS_PATH = path.resolve(
   process.cwd(),
-  "backend/data/processed-events.json",
+  process.env.PROCESSED_EVENTS_PATH ||
+    path.join(process.env.DATA_DIR || "backend/data", "processed-events.json"),
 );
 
 export async function createProcessedEventsStore(

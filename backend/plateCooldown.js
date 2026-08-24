@@ -3,7 +3,8 @@ import path from "node:path";
 
 const DEFAULT_PLATE_COOLDOWN_PATH = path.resolve(
   process.cwd(),
-  "backend/data/plate-cooldown.json",
+  process.env.PLATE_COOLDOWN_PATH ||
+    path.join(process.env.DATA_DIR || "backend/data", "plate-cooldown.json"),
 );
 
 export async function createPlateCooldownStore(

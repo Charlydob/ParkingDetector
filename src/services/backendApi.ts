@@ -1,6 +1,27 @@
 import type { Detection } from "../types/detection";
+import type { CheckoutOverview, KeyIdentifier, Room } from "../types/checkout";
+import type { ModuleDefinition, ModuleId } from "../types/modules";
 import type { Reservation, ReservationSourceName } from "../types/reservation";
+import type {
+  AuthSession,
+  Tenant,
+  TenantMember,
+  TenantMembership,
+  UserInvitation,
+  UserProfile,
+} from "../types/tenant";
 import { getBackendUrl, validateBackendUrl } from "./backendConfigService";
+
+let selectedTenantId: string | undefined;
+let selectedTenantSlug: string | undefined;
+
+export function setSelectedTenantId(tenantId?: string) {
+  selectedTenantId = tenantId;
+}
+
+export function setSelectedTenantSlug(slug?: string) {
+  selectedTenantSlug = slug;
+}
 
 export interface ReservationMapping {
   reservationCode: string;
@@ -120,12 +141,21 @@ export interface IntegrationSettings {
     connected?: boolean;
     baseUrl: string;
     pollIntervalMs: number;
+    cameras?: string[];
     lastPollAt?: string | null;
     lastEvent?: string | null;
     version?: string | null;
   };
   backend?: { online: boolean };
-  firebase?: { connected: boolean };
+  database?: { connected: boolean };
+  notifications?: {
+    telegram: {
+      enabled: boolean;
+      chatId: string;
+      botTokenMasked: string;
+      botTokenConfigured: boolean;
+    };
+  };
   reservationDiagnostics?: {
     reservationsLoaded: number;
     lastReservationRefreshAt?: string | null;
@@ -197,7 +227,7 @@ function normalizeIntegrationSettings(payload: IntegrationSettings): Integration
       reservationWebhook: {
         connected: Boolean(reservationWebhook.connected),
         urlPath: reservationWebhook.urlPath || "/api/reservations/webhook",
-        headerName: reservationWebhook.headerName || "x-parking-detector-secret",
+        headerName: reservationWebhook.headerName || "x-hotel-automation-secret",
         secretConfigured: Boolean(reservationWebhook.secretConfigured),
       },
       sourceDiagnostics: reservations.sourceDiagnostics || {},
@@ -210,24 +240,40 @@ function normalizeIntegrationSettings(payload: IntegrationSettings): Integration
     frigate: {
       baseUrl: payload.frigate?.baseUrl || "",
       pollIntervalMs: payload.frigate?.pollIntervalMs || 5000,
+      cameras: payload.frigate?.cameras || [],
       connected: payload.frigate?.connected,
       lastPollAt: payload.frigate?.lastPollAt,
       lastEvent: payload.frigate?.lastEvent,
       version: payload.frigate?.version,
     },
     backend: payload.backend,
-    firebase: payload.firebase,
+    database: payload.database,
+    notifications: {
+      telegram: {
+        enabled: Boolean(payload.notifications?.telegram?.enabled),
+        chatId: payload.notifications?.telegram?.chatId || "",
+        botTokenMasked: payload.notifications?.telegram?.botTokenMasked || "",
+        botTokenConfigured: Boolean(payload.notifications?.telegram?.botTokenConfigured),
+      },
+    },
     reservationDiagnostics: payload.reservationDiagnostics,
   };
 }
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  headers.set("Content-Type", "application/json");
+
+  if (selectedTenantId) {
+    headers.set("X-Tenant-Id", selectedTenantId);
+  } else if (selectedTenantSlug) {
+    headers.set("X-Tenant-Slug", selectedTenantSlug);
+  }
+
   const response = await fetch(`${getBackendUrl()}${path}`, {
     ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...init?.headers,
-    },
+    headers,
+    credentials: "include",
   });
 
   const payload = (await response.json().catch(() => ({}))) as { error?: string };
@@ -237,6 +283,51 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   return payload as T;
+}
+
+async function requestPublicJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  headers.set("Content-Type", "application/json");
+
+  const response = await fetch(`${getBackendUrl()}${path}`, {
+    ...init,
+    headers,
+    credentials: "include",
+  });
+
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+
+  if (!response.ok) {
+    throw new Error(payload.error || `Backend request failed (${response.status}).`);
+  }
+
+  return payload as T;
+}
+
+export async function getAuthSession(): Promise<AuthSession> {
+  const session = await requestJson<AuthSession>("/api/auth/session");
+  setSelectedTenantId(session.activeTenantId);
+  return session;
+}
+
+export async function loginWithPassword(email: string, password: string): Promise<void> {
+  await requestPublicJson("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+export async function logoutSession(): Promise<void> {
+  await requestPublicJson("/api/auth/logout", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  setSelectedTenantId(undefined);
+  setSelectedTenantSlug(undefined);
+}
+
+export async function getModuleRegistry(): Promise<ModuleDefinition[]> {
+  return requestJson<ModuleDefinition[]>("/api/modules");
 }
 
 export async function getBackendStatus(): Promise<BackendStatus> {
@@ -249,6 +340,7 @@ export async function testBackendConnection(url: string): Promise<BackendStatus>
     headers: {
       "Content-Type": "application/json",
     },
+    credentials: "include",
   });
   const payload = (await response.json().catch(() => ({}))) as BackendStatus & {
     error?: string;
@@ -404,6 +496,17 @@ export async function disconnectStripe(): Promise<IntegrationSettings["stripe"]>
   return requestJson("/api/settings/stripe", { method: "DELETE" });
 }
 
+export async function saveNotifications(settings: {
+  telegram: { enabled: boolean; chatId: string; botToken?: string };
+}): Promise<IntegrationSettings> {
+  return normalizeIntegrationSettings(
+    await requestJson<IntegrationSettings>("/api/settings/notifications", {
+      method: "POST",
+      body: JSON.stringify(settings),
+    }),
+  );
+}
+
 export async function testFrigate(baseUrl: string): Promise<{ connected: boolean; version?: string | null }> {
   return requestJson("/api/settings/frigate/test", {
     method: "POST",
@@ -414,10 +517,11 @@ export async function testFrigate(baseUrl: string): Promise<{ connected: boolean
 export async function saveFrigate(
   baseUrl: string,
   pollIntervalMs: number,
+  cameras: string[] = [],
 ): Promise<IntegrationSettings["frigate"]> {
   return requestJson("/api/settings/frigate", {
     method: "POST",
-    body: JSON.stringify({ baseUrl, pollIntervalMs }),
+    body: JSON.stringify({ baseUrl, pollIntervalMs, cameras }),
   });
 }
 
@@ -432,7 +536,9 @@ export async function deleteDetectionPermanently(
     method: "DELETE",
     headers: {
       "Content-Type": "application/json",
+      ...authHeaders(),
     },
+    credentials: "include",
   });
   console.info("[Delete] HTTP status:", response.status);
 
@@ -445,6 +551,335 @@ export async function deleteDetectionPermanently(
   }
 
   return payload;
+}
+
+function authHeaders(): Record<string, string> {
+  return {
+    ...(selectedTenantId ? { "X-Tenant-Id": selectedTenantId } : {}),
+    ...(!selectedTenantId && selectedTenantSlug ? { "X-Tenant-Slug": selectedTenantSlug } : {}),
+  };
+}
+
+export async function getParkingDetections(): Promise<Detection[]> {
+  return requestJson<Detection[]>("/api/parking/detections");
+}
+
+export async function updateBackendDetectionReviewStatus(
+  detectionId: string,
+  reviewStatus: Detection["reviewStatus"],
+): Promise<void> {
+  await requestJson(`/api/parking/detections/${encodeURIComponent(detectionId)}/review`, {
+    method: "PATCH",
+    body: JSON.stringify({ reviewStatus }),
+  });
+}
+
+export async function confirmBackendTemporalAssociation(
+  detectionId: string,
+  candidate: NonNullable<Detection["associationCandidates"]>[number],
+): Promise<void> {
+  await requestJson(`/api/parking/detections/${encodeURIComponent(detectionId)}/confirm`, {
+    method: "POST",
+    body: JSON.stringify({ candidate }),
+  });
+}
+
+export async function getCheckoutOverview(): Promise<CheckoutOverview> {
+  return requestJson<CheckoutOverview>("/api/checkout/overview");
+}
+
+export async function getCheckoutKeys(): Promise<KeyIdentifier[]> {
+  return requestJson<KeyIdentifier[]>("/api/checkout/keys");
+}
+
+export async function createRoom(input: Partial<Room>): Promise<Room> {
+  return requestJson<Room>("/api/checkout/rooms", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateRoom(roomId: string, input: Partial<Room>): Promise<Room> {
+  return requestJson<Room>(`/api/checkout/rooms/${encodeURIComponent(roomId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function createCheckoutKey(input: {
+  roomId: string;
+  label?: string;
+}): Promise<KeyIdentifier & { qrDataUrl: string }> {
+  return requestJson("/api/checkout/keys", {
+    method: "POST",
+    body: JSON.stringify({ ...input, type: "qr" }),
+  });
+}
+
+export async function updateCheckoutKey(
+  keyId: string,
+  input: Partial<KeyIdentifier> & { regenerate?: boolean },
+): Promise<KeyIdentifier & { qrDataUrl: string }> {
+  return requestJson(`/api/checkout/keys/${encodeURIComponent(keyId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function manualCheckout(roomId: string): Promise<{ duplicate: boolean }> {
+  return requestJson("/api/checkout/manual", {
+    method: "POST",
+    body: JSON.stringify({ roomId }),
+  });
+}
+
+export async function getPublicCheckoutTenant(slug: string): Promise<{
+  tenantName: string;
+  slug: string;
+  enabled: boolean;
+}> {
+  return requestJson(`/api/public/tenants/${encodeURIComponent(slug)}/checkout`);
+}
+
+export async function submitPublicCheckout(token: string): Promise<{
+  success: boolean;
+  duplicate: boolean;
+  timestamp: string;
+}> {
+  return requestJson(`/api/public/checkout/${encodeURIComponent(token)}`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export interface AdminTenantSummary extends Tenant {
+  userCount: number;
+  users: TenantMember[];
+  invitations: UserInvitation[];
+  modules: Record<ModuleId, boolean>;
+  settingsSummary: {
+    reservationSource: string;
+    frigateBaseUrl: string;
+    stripeConnected: boolean;
+    telegramEnabled: boolean;
+    rooms: number;
+    keys: number;
+    updatedAt?: string | null;
+  };
+}
+
+export async function getAdminTenants(): Promise<AdminTenantSummary[]> {
+  return requestJson<AdminTenantSummary[]>("/api/admin/tenants");
+}
+
+export async function createTenant(input: {
+  name: string;
+  slug: string;
+  modules?: Partial<Record<ModuleId, boolean>>;
+}): Promise<Tenant> {
+  return requestJson<Tenant>("/api/admin/tenants", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateAdminTenant(
+  tenantId: string,
+  input: Partial<Tenant> & { displayName?: string },
+): Promise<Tenant> {
+  return requestJson<Tenant>(`/api/admin/tenants/${encodeURIComponent(tenantId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getAdminTenantIntegrationSettings(
+  tenantId: string,
+): Promise<IntegrationSettings> {
+  return normalizeIntegrationSettings(
+    await requestJson<IntegrationSettings>(
+      `/api/admin/tenants/${encodeURIComponent(tenantId)}/settings/integrations`,
+    ),
+  );
+}
+
+export async function updateAdminTenantIntegrationSettings(
+  tenantId: string,
+  patch: Record<string, unknown>,
+): Promise<IntegrationSettings> {
+  return normalizeIntegrationSettings(
+    await requestJson<IntegrationSettings>(
+      `/api/admin/tenants/${encodeURIComponent(tenantId)}/settings/integrations`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      },
+    ),
+  );
+}
+
+export async function setAdminTenantModule(
+  tenantId: string,
+  moduleId: ModuleId,
+  enabled: boolean,
+): Promise<void> {
+  await requestJson(`/api/admin/tenants/${encodeURIComponent(tenantId)}/modules/${moduleId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export async function createAdminTenantInvitation(
+  tenantId: string,
+  input: { email: string; role: "tenant_admin" | "staff" },
+): Promise<UserInvitation> {
+  return requestJson<UserInvitation>(
+    `/api/admin/tenants/${encodeURIComponent(tenantId)}/invitations`,
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function getAdminTenantInvitationLink(
+  tenantId: string,
+  invitationId: string,
+): Promise<{ inviteUrl: string }> {
+  return requestJson<{ inviteUrl: string }>(
+    `/api/admin/tenants/${encodeURIComponent(tenantId)}/invitations/${encodeURIComponent(invitationId)}`,
+  );
+}
+
+export async function revokeAdminTenantInvitation(
+  tenantId: string,
+  invitationId: string,
+): Promise<UserInvitation> {
+  return requestJson<UserInvitation>(
+    `/api/admin/tenants/${encodeURIComponent(tenantId)}/invitations/${encodeURIComponent(invitationId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function regenerateAdminTenantInvitation(
+  tenantId: string,
+  invitationId: string,
+): Promise<UserInvitation> {
+  return requestJson<UserInvitation>(
+    `/api/admin/tenants/${encodeURIComponent(tenantId)}/invitations/${encodeURIComponent(invitationId)}/regenerate`,
+    { method: "POST" },
+  );
+}
+
+export async function updateAdminTenantMembershipRole(
+  tenantId: string,
+  membershipId: string,
+  role: "tenant_admin" | "staff",
+): Promise<TenantMembership> {
+  return requestJson<TenantMembership>(
+    `/api/admin/tenants/${encodeURIComponent(tenantId)}/memberships/${encodeURIComponent(membershipId)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ role }),
+    },
+  );
+}
+
+export async function revokeAdminTenantMembership(
+  tenantId: string,
+  membershipId: string,
+): Promise<{ success: boolean }> {
+  return requestJson<{ success: boolean }>(
+    `/api/admin/tenants/${encodeURIComponent(tenantId)}/memberships/${encodeURIComponent(membershipId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function getTenantUsers(): Promise<{
+  members: TenantMember[];
+  invitations: UserInvitation[];
+}> {
+  return requestJson("/api/tenant/users");
+}
+
+export async function updateTenantProfile(input: {
+  name?: string;
+  displayName?: string;
+  basicInfo?: Tenant["basicInfo"];
+}): Promise<Tenant> {
+  return requestJson<Tenant>("/api/tenant/profile", {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function createTenantInvitation(input: {
+  email: string;
+  role: "tenant_admin" | "staff";
+}): Promise<UserInvitation> {
+  return requestJson<UserInvitation>("/api/tenant/invitations", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getTenantInvitationLink(
+  invitationId: string,
+): Promise<{ inviteUrl: string }> {
+  return requestJson<{ inviteUrl: string }>(
+    `/api/tenant/invitations/${encodeURIComponent(invitationId)}`,
+  );
+}
+
+export async function revokeTenantInvitation(invitationId: string): Promise<UserInvitation> {
+  return requestJson<UserInvitation>(
+    `/api/tenant/invitations/${encodeURIComponent(invitationId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function regenerateTenantInvitation(invitationId: string): Promise<UserInvitation> {
+  return requestJson<UserInvitation>(
+    `/api/tenant/invitations/${encodeURIComponent(invitationId)}/regenerate`,
+    { method: "POST" },
+  );
+}
+
+export async function updateTenantMembershipRole(
+  membershipId: string,
+  role: "tenant_admin" | "staff",
+): Promise<TenantMembership> {
+  return requestJson<TenantMembership>(
+    `/api/tenant/memberships/${encodeURIComponent(membershipId)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ role }),
+    },
+  );
+}
+
+export async function revokeTenantMembership(
+  membershipId: string,
+): Promise<{ success: boolean }> {
+  return requestJson<{ success: boolean }>(
+    `/api/tenant/memberships/${encodeURIComponent(membershipId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function getInvitation(token: string): Promise<UserInvitation> {
+  return requestPublicJson<UserInvitation>(`/api/invitations/${encodeURIComponent(token)}`);
+}
+
+export async function acceptInvitation(token: string, email: string, password: string): Promise<{
+  tenantId: string;
+  tenantSlug?: string;
+  membership: TenantMembership;
+}> {
+  return requestPublicJson(`/api/invitations/${encodeURIComponent(token)}`, {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  });
 }
 
 export async function simulateCheckIn(

@@ -18,7 +18,7 @@ function timestampForFile(value) {
   return safeDate.toISOString().replace(/[:.]/g, "-");
 }
 
-function relativeForFirebase(filePath) {
+function relativeForDisplay(filePath) {
   return path.relative(process.cwd(), filePath).split(path.sep).join("/");
 }
 
@@ -55,7 +55,7 @@ export function createFileStorage(baseDir = process.env.EVIDENCE_DIR || DEFAULT_
     const filePath = path.join(directory, `${filename}.${extension}`);
 
     await writeFile(filePath, buffer);
-    return relativeForFirebase(filePath);
+    return relativeForDisplay(filePath);
   }
 
   async function deleteEvidencePath(relativePath) {
@@ -67,7 +67,7 @@ export function createFileStorage(baseDir = process.env.EVIDENCE_DIR || DEFAULT_
     const allowedRoot = `${evidenceDir}${path.sep}`;
 
     if (!filePath.startsWith(allowedRoot)) {
-      throw new Error(`Ruta de evidencia fuera de ${relativeForFirebase(evidenceDir)}.`);
+      throw new Error(`Ruta de evidencia fuera de ${relativeForDisplay(evidenceDir)}.`);
     }
 
     try {

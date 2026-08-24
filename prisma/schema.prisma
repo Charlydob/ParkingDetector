@@ -1,0 +1,259 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String       @id @default(uuid()) @db.Uuid
+  email        String       @unique
+  passwordHash String       @map("password_hash")
+  displayName  String       @map("display_name")
+  globalRole   String?      @map("global_role")
+  active       Boolean      @default(true)
+  createdAt    DateTime     @default(now()) @map("created_at")
+  updatedAt    DateTime     @updatedAt @map("updated_at")
+  invitations  Invitation[] @relation("InvitationInviter")
+  memberships  Membership[]
+  sessions     Session[]
+
+  @@map("users")
+}
+
+model Session {
+  id         String   @id
+  userId     String   @map("user_id") @db.Uuid
+  expiresAt  DateTime @map("expires_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+  lastSeenAt DateTime @default(now()) @map("last_seen_at")
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+model Tenant {
+  id             String           @id @default(uuid()) @db.Uuid
+  name           String
+  slug           String           @unique
+  active         Boolean          @default(true)
+  basicInfo      Json?            @map("basic_info")
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
+  checkoutEvents CheckoutEvent[]
+  detections     Detection[]
+  invitations    Invitation[]
+  keyIdentifiers KeyIdentifier[]
+  memberships    Membership[]
+  modules        TenantModule[]
+  rooms          Room[]
+  settings       TenantSettings?
+
+  @@map("tenants")
+}
+
+model Membership {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  role      String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId])
+  @@index([userId])
+  @@map("memberships")
+}
+
+model TenantModule {
+  tenantId  String   @map("tenant_id") @db.Uuid
+  moduleId  String   @map("module_id")
+  enabled   Boolean  @default(false)
+  updatedAt DateTime @updatedAt @map("updated_at")
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, moduleId])
+  @@map("tenant_modules")
+}
+
+model TenantSettings {
+  tenantId      String   @id @map("tenant_id") @db.Uuid
+  reservations  Json     @default("{}")
+  frigate       Json     @default("{}")
+  cameras       Json     @default("[]")
+  stripe        Json     @default("{}")
+  telegram      Json     @default("{}")
+  notifications Json     @default("{}")
+  checkout      Json     @default("{}")
+  integrations  Json     @default("{}")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_settings")
+}
+
+model Room {
+  id             String           @id @default(uuid()) @db.Uuid
+  tenantId       String           @map("tenant_id") @db.Uuid
+  number         String
+  name           String?
+  active         Boolean          @default(true)
+  status         String           @default("unknown")
+  lastCheckoutAt DateTime?        @map("last_checkout_at")
+  lastCheckoutSource String?      @map("last_checkout_source")
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
+  checkoutEvents CheckoutEvent[]
+  keys           KeyIdentifier[]
+  tenant         Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, number])
+  @@index([tenantId, status])
+  @@map("rooms")
+}
+
+model KeyIdentifier {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  roomId     String   @map("room_id") @db.Uuid
+  type       String
+  identifier String   @unique
+  label      String?
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+  room       Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, roomId])
+  @@map("key_identifiers")
+}
+
+model CheckoutEvent {
+  id               String   @id @default(uuid()) @db.Uuid
+  tenantId         String   @map("tenant_id") @db.Uuid
+  roomId           String   @map("room_id") @db.Uuid
+  source           String
+  sourceIdentifier String?  @map("source_identifier")
+  status           String
+  metadata         Json     @default("{}")
+  timestamp        DateTime @default(now())
+  tenant           Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  room             Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, timestamp])
+  @@index([tenantId, roomId])
+  @@map("checkout_events")
+}
+
+model Invitation {
+  id          String    @id @default(uuid()) @db.Uuid
+  email       String
+  tenantId    String    @map("tenant_id") @db.Uuid
+  role        String
+  tokenHash   String    @unique @map("token_hash")
+  invitedBy   String?   @map("invited_by") @db.Uuid
+  expiresAt   DateTime  @map("expires_at")
+  usedAt      DateTime? @map("used_at")
+  revokedAt   DateTime? @map("revoked_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  inviter     User?     @relation("InvitationInviter", fields: [invitedBy], references: [id], onDelete: SetNull)
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([email])
+  @@map("invitations")
+}
+
+model Detection {
+  id                    String    @id @default(uuid()) @db.Uuid
+  tenantId              String    @map("tenant_id") @db.Uuid
+  plate                 String
+  camera                String
+  detectedAt            DateTime  @map("detected_at")
+  parkingStatus         String?   @map("parking_status")
+  associationStatus     String?   @map("association_status")
+  associationMethod     String?   @map("association_method")
+  reservationCode       String?   @map("reservation_code")
+  room                  String?
+  guestName             String?   @map("guest_name")
+  guestEmail            String?   @map("guest_email")
+  checkInAt             DateTime? @map("check_in_at")
+  timeDifferenceMinutes Float?    @map("time_difference_minutes")
+  confidence            Float?
+  reviewStatus          String?   @map("review_status")
+  associationCandidates Json?     @map("association_candidates")
+  snapshotUrl           String?   @map("snapshot_url")
+  videoUrl              String?   @map("video_url")
+  localSnapshotPath     String?   @map("local_snapshot_path")
+  localVideoPath        String?   @map("local_video_path")
+  notificationSent      Boolean   @default(false) @map("notification_sent")
+  metadata              Json      @default("{}")
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @updatedAt @map("updated_at")
+  tenant                Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, detectedAt])
+  @@index([tenantId, plate])
+  @@map("detections")
+}
+
+model CheckIn {
+  id                      String   @id @default(uuid()) @db.Uuid
+  tenantId                String   @map("tenant_id") @db.Uuid
+  reservationCode         String   @map("reservation_code")
+  fullName                String   @map("full_name")
+  checkInAt               DateTime @map("check_in_at")
+  source                  String
+  stripeEventId           String?  @map("stripe_event_id")
+  stripePaymentIntentId   String?  @map("stripe_payment_intent_id")
+  stripeCheckoutSessionId String?  @map("stripe_checkout_session_id")
+  room                    String?
+  guestEmail              String?  @map("guest_email")
+  plate                   String?
+  parkingValid            Boolean? @map("parking_valid")
+  paymentStatus           String?  @map("payment_status")
+  metadata                Json     @default("{}")
+  createdAt               DateTime @default(now()) @map("created_at")
+
+  @@index([tenantId, checkInAt])
+  @@index([tenantId, reservationCode])
+  @@map("check_ins")
+}
+
+model PlateState {
+  plate                 String    @id
+  tenantId              String?   @map("tenant_id") @db.Uuid
+  currentlyPresent      Boolean   @default(false) @map("currently_present")
+  firstSeenAt           DateTime? @map("first_seen_at")
+  lastSeenAt            DateTime? @map("last_seen_at")
+  seenAgainAt           DateTime? @map("seen_again_at")
+  releasedAt            DateTime? @map("released_at")
+  lastDetectionId       String?   @map("last_detection_id") @db.Uuid
+  activeReservationCode String?   @map("active_reservation_code")
+  activeRoom            String?   @map("active_room")
+  activeGuestName       String?   @map("active_guest_name")
+  associationStatus     String?   @map("association_status")
+  associationMethod     String?   @map("association_method")
+  confidence            Float?
+  updatedAt             DateTime  @updatedAt @map("updated_at")
+
+  @@index([tenantId])
+  @@map("plate_states")
+}
+
+model Diagnostic {
+  key       String   @id
+  value     Json     @default("{}")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("diagnostics")
+}

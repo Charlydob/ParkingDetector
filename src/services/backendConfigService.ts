@@ -1,5 +1,6 @@
 const BACKEND_URL_STORAGE_KEY = "parkingDetector.backendUrl";
-const DEFAULT_BACKEND_URL = "http://127.0.0.1:3001";
+const DEFAULT_BACKEND_URL = "";
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
 export function normalizeBackendUrl(url: string): string {
   return url.trim().replace(/\/+$/g, "");
@@ -7,6 +8,9 @@ export function normalizeBackendUrl(url: string): string {
 
 export function validateBackendUrl(url: string): string {
   const normalizedUrl = normalizeBackendUrl(url);
+  if (!normalizedUrl) {
+    return "";
+  }
   const parsedUrl = new URL(normalizedUrl);
 
   if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
@@ -17,17 +21,34 @@ export function validateBackendUrl(url: string): string {
 }
 
 export function getDefaultBackendUrl(): string {
-  return normalizeBackendUrl(import.meta.env.VITE_BACKEND_URL || DEFAULT_BACKEND_URL);
+  return normalizeBackendUrl(DEFAULT_BACKEND_URL);
 }
 
 export function getBackendUrl(): string {
   const savedUrl = localStorage.getItem(BACKEND_URL_STORAGE_KEY);
 
   if (savedUrl) {
-    return normalizeBackendUrl(savedUrl);
+    const normalizedUrl = normalizeBackendUrl(savedUrl);
+
+    if (import.meta.env.DEV && isStaleLocalFrontendUrl(normalizedUrl)) {
+      localStorage.removeItem(BACKEND_URL_STORAGE_KEY);
+      return getDefaultBackendUrl();
+    }
+
+    return normalizedUrl;
   }
 
   return getDefaultBackendUrl();
+}
+
+function isStaleLocalFrontendUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+
+    return LOCAL_HOSTS.has(parsed.hostname) && parsed.port !== "3001";
+  } catch {
+    return false;
+  }
 }
 
 export function setBackendUrl(url: string): string {

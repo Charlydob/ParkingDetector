@@ -12,3 +12,4 @@ backend/data/*.log
 backend/data/*.err.log
 backend/data/test-*.json
 backend/evidence/
+.codex-logs/

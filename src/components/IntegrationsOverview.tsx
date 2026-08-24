@@ -3,7 +3,7 @@ import type { BackendStatus } from "../services/backendApi";
 
 interface IntegrationsOverviewProps {
   backendStatus?: BackendStatus;
-  firebaseConnected: boolean;
+  databaseConnected: boolean;
 }
 
 function stateLabel(connected: boolean): string {
@@ -35,7 +35,7 @@ function formatDate(value?: string | null): string {
 
 export function IntegrationsOverview({
   backendStatus,
-  firebaseConnected,
+  databaseConnected,
 }: IntegrationsOverviewProps) {
   const frigateConnected = Boolean(backendStatus?.frigateConnected);
   const stripeConnected = Boolean(backendStatus?.stripeConfigured);
@@ -74,9 +74,9 @@ export function IntegrationsOverview({
       online: stripeConnected,
     },
     {
-      label: "Firebase",
-      value: stateLabel(firebaseConnected),
-      online: firebaseConnected,
+      label: "PostgreSQL",
+      value: stateLabel(databaseConnected),
+      online: databaseConnected,
     },
     {
       label: "Backend",

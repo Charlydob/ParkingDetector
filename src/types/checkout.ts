@@ -1,0 +1,53 @@
+export type RoomStatus =
+  | "occupied"
+  | "checkout_received"
+  | "ready_for_cleaning"
+  | "cleaning"
+  | "ready"
+  | "unknown";
+
+export type CheckoutSource = "qr" | "nfc" | "manual" | "pms" | "other";
+export type KeyIdentifierType = "qr" | "nfc";
+
+export interface Room {
+  id: string;
+  tenantId: string;
+  number: string;
+  name?: string;
+  active: boolean;
+  status: RoomStatus;
+  createdAt: string;
+  updatedAt: string;
+  lastCheckoutAt?: string;
+  lastCheckoutSource?: CheckoutSource;
+}
+
+export interface KeyIdentifier {
+  id: string;
+  tenantId: string;
+  roomId: string;
+  type: KeyIdentifierType;
+  identifier: string;
+  label: string;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CheckoutEvent {
+  id: string;
+  tenantId: string;
+  roomId: string;
+  source: CheckoutSource;
+  sourceIdentifier?: string;
+  timestamp: string;
+  status: "registered" | "duplicate" | "ignored";
+  metadata?: Record<string, unknown>;
+}
+
+export interface CheckoutOverview {
+  rooms: Room[];
+  events: CheckoutEvent[];
+  publicUrl: string;
+  publicQrDataUrl?: string;
+}

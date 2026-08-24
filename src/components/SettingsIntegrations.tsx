@@ -14,6 +14,7 @@ import {
   saveReservationWebhook,
   saveReservationMapping,
   saveStripe,
+  saveNotifications,
   testReservationMapping,
   testFrigate,
   testBackendConnection,
@@ -120,14 +121,18 @@ export function SettingsIntegrations({
   const [jsonPath, setJsonPath] = useState("");
   const [jsonAuth, setJsonAuth] = useState<JsonAuthSettings>(defaultJsonAuth);
   const [reservationSourceMode, setReservationSourceMode] = useState<"json" | "reservationWebhook">("json");
-  const [reservationWebhookHeaderName, setReservationWebhookHeaderName] = useState("x-parking-detector-secret");
+  const [reservationWebhookHeaderName, setReservationWebhookHeaderName] = useState("x-hotel-automation-secret");
   const [reservationWebhookSecret, setReservationWebhookSecret] = useState("");
   const [sourcePreview, setSourcePreview] = useState<ReservationSourcePreview | undefined>();
   const [mappingPreview, setMappingPreview] = useState<ReservationSourcePreview | undefined>();
   const [stripeSecretKey, setStripeSecretKey] = useState("");
   const [stripeWebhookSecret, setStripeWebhookSecret] = useState("");
+  const [telegramEnabled, setTelegramEnabled] = useState(false);
+  const [telegramChatId, setTelegramChatId] = useState("");
+  const [telegramBotToken, setTelegramBotToken] = useState("");
   const [frigateBaseUrl, setFrigateBaseUrl] = useState("");
   const [frigatePollIntervalMs, setFrigatePollIntervalMs] = useState(5000);
+  const [frigateCameras, setFrigateCameras] = useState("");
   const [mapping, setMapping] = useState<ReservationMapping>({
     reservationCode: "reservationCode",
     name: "name",
@@ -170,7 +175,7 @@ export function SettingsIntegrations({
       settings.reservations.source === "reservationWebhook" ? "reservationWebhook" : "json",
     );
     setReservationWebhookHeaderName(
-      settings.reservations.reservationWebhook.headerName || "x-parking-detector-secret",
+      settings.reservations.reservationWebhook.headerName || "x-hotel-automation-secret",
     );
     setSourcePreview(
       settings.reservations.sourceDiagnostics?.recordsFound !== undefined
@@ -203,7 +208,11 @@ export function SettingsIntegrations({
     setFrigatePollIntervalMs(
       backendStatus?.frigatePollIntervalMs || settings.frigate.pollIntervalMs || 5000,
     );
+    setFrigateCameras((settings.frigate.cameras || []).join("\n"));
     setMapping(settings.reservations.mapping);
+    setTelegramEnabled(Boolean(settings.notifications?.telegram.enabled));
+    setTelegramChatId(settings.notifications?.telegram.chatId || "");
+    setTelegramBotToken("");
   }, [settings, backendStatus]);
 
   async function run(label: string, action: () => Promise<unknown>, success: string) {
@@ -808,7 +817,7 @@ export function SettingsIntegrations({
                     <pre>{formatJson(mappingPreview.sampleRecord)}</pre>
                   </div>
                   <div>
-                    <span>Normalized Parking Detector Reservation</span>
+                    <span>Normalized Hotel Automation Reservation</span>
                     <pre>{formatJson(mappingPreview.sampleNormalized)}</pre>
                   </div>
                 </div>
@@ -931,6 +940,15 @@ export function SettingsIntegrations({
                 onChange={(event) => setFrigatePollIntervalMs(Number(event.target.value))}
               />
             </label>
+            <label>
+              <span>Cameras</span>
+              <textarea
+                value={frigateCameras}
+                onChange={(event) => setFrigateCameras(event.target.value)}
+                placeholder="entrance&#10;parking-east"
+                rows={4}
+              />
+            </label>
             <div className="meta-list">
               <span>Last Poll</span>
               <strong>{formatDate(backendStatus?.lastPollAt || settings?.frigate.lastPollAt)}</strong>
@@ -944,7 +962,70 @@ export function SettingsIntegrations({
                 <Wifi size={15} />
                 Test Connection
               </button>
-              <button type="button" onClick={() => run("frigate-save", async () => { await saveFrigate(frigateBaseUrl, frigatePollIntervalMs); return reloadSettings(); }, "Frigate settings saved.")} disabled={busy !== ""}>
+              <button type="button" onClick={() => run("frigate-save", async () => { await saveFrigate(frigateBaseUrl, frigatePollIntervalMs, frigateCameras.split(/\r?\n/).map((camera) => camera.trim()).filter(Boolean)); return reloadSettings(); }, "Frigate settings saved.")} disabled={busy !== ""}>
+                <Save size={15} />
+                Save
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section className="panel integration-card">
+          <div className="section-heading">
+            <h2>Telegram</h2>
+            <span>{settings?.notifications?.telegram.enabled ? "Enabled" : "Disabled"}</span>
+          </div>
+          <div className="settings-form">
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={telegramEnabled}
+                onChange={(event) => setTelegramEnabled(event.target.checked)}
+              />
+              <span>Send checkout notifications</span>
+            </label>
+            <label>
+              <span>Chat ID</span>
+              <input
+                value={telegramChatId}
+                onChange={(event) => setTelegramChatId(event.target.value)}
+              />
+            </label>
+            <label>
+              <span>Bot token</span>
+              <input
+                type="password"
+                placeholder={
+                  settings?.notifications?.telegram.botTokenConfigured
+                    ? settings.notifications.telegram.botTokenMasked
+                    : ""
+                }
+                value={telegramBotToken}
+                onChange={(event) => setTelegramBotToken(event.target.value)}
+              />
+            </label>
+            <div className="button-row">
+              <button
+                type="button"
+                onClick={() =>
+                  run(
+                    "telegram-save",
+                    async () => {
+                      const next = await saveNotifications({
+                        telegram: {
+                          enabled: telegramEnabled,
+                          chatId: telegramChatId,
+                          botToken: telegramBotToken,
+                        },
+                      });
+                      setTelegramBotToken("");
+                      return next;
+                    },
+                    "Telegram settings saved.",
+                  )
+                }
+                disabled={busy !== ""}
+              >
                 <Save size={15} />
                 Save
               </button>

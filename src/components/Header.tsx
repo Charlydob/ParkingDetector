@@ -1,4 +1,5 @@
 import { RefreshCw } from "lucide-react";
+import { APP_NAME } from "../config/app";
 
 interface HeaderProps {
   onRefreshReservations: () => void;
@@ -16,7 +17,7 @@ export function Header({
   return (
     <header className="app-header">
       <div>
-        <h1>Parking Detector</h1>
+        <h1>{APP_NAME}</h1>
       </div>
       <div className="header-actions">
         <div className="segmented-control compact" role="tablist" aria-label="Main view">

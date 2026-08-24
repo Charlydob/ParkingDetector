@@ -11,11 +11,12 @@ import {
 } from "./frigateClient.js";
 
 export function createEventProcessor({
-  firebaseClient,
+  database,
   frigateClient,
   fileStorage,
   processedEvents,
   plateCooldown,
+  tenantId,
   onDetectionStored,
   onCheckInStored,
 }) {
@@ -82,8 +83,8 @@ export function createEventProcessor({
       return;
     }
 
-    const currentState = await firebaseClient.getPlateState(plate);
-    await firebaseClient.updatePlateState(plate, {
+    const currentState = await database.getPlateState(plate);
+    await database.updatePlateState(plate, {
       plate,
       currentlyPresent: true,
       firstSeenAt: currentState?.firstSeenAt || detection.detectedAt,
@@ -99,7 +100,7 @@ export function createEventProcessor({
       return;
     }
 
-    const currentState = await firebaseClient.getPlateState(plate);
+    const currentState = await database.getPlateState(plate);
     if (
       currentState?.activeReservationCode &&
       currentState.activeReservationCode !== detection.reservationCode
@@ -110,7 +111,7 @@ export function createEventProcessor({
       return;
     }
 
-    await firebaseClient.updatePlateState(plate, {
+    await database.updatePlateState(plate, {
       plate,
       currentlyPresent: currentState?.currentlyPresent ?? true,
       firstSeenAt: currentState?.firstSeenAt || detection.detectedAt,
@@ -121,14 +122,14 @@ export function createEventProcessor({
   }
 
   async function shouldIgnoreDetectionForPlateState(plate, detectedAt) {
-    const plateState = await firebaseClient.getPlateState(plate);
+    const plateState = await database.getPlateState(plate);
 
     if (!plateState) {
       return false;
     }
 
     if (isPresenceExpired(plateState, detectedAt)) {
-      await firebaseClient.updatePlateState(plate, {
+      await database.updatePlateState(plate, {
         currentlyPresent: false,
       });
 
@@ -138,7 +139,7 @@ export function createEventProcessor({
     }
 
     if (plateState.currentlyPresent && !isPresenceExpired(plateState, detectedAt)) {
-      await firebaseClient.updatePlateState(plate, {
+      await database.updatePlateState(plate, {
         lastSeenAt: detectedAt,
       });
       console.log(`[PlateState] ${plate} already present - event ignored`);
@@ -146,7 +147,7 @@ export function createEventProcessor({
     }
 
     if (plateState.activeReservationCode) {
-      await firebaseClient.updatePlateState(plate, {
+      await database.updatePlateState(plate, {
         currentlyPresent: true,
         lastSeenAt: detectedAt,
         seenAgainAt: detectedAt,
@@ -161,14 +162,14 @@ export function createEventProcessor({
   }
 
   async function refreshExpiredPlateStates(now = new Date().toISOString()) {
-    const plateStates = await firebaseClient.getPlateStates();
+    const plateStates = await database.getPlateStates();
 
     for (const plateState of plateStates) {
       if (!isPresenceExpired(plateState, now)) {
         continue;
       }
 
-      await firebaseClient.updatePlateState(plateState.plate || plateState.id, {
+      await database.updatePlateState(plateState.plate || plateState.id, {
         currentlyPresent: false,
       });
     }
@@ -203,7 +204,7 @@ export function createEventProcessor({
       }
     }
 
-    await firebaseClient.updateDetection(detection.id, {
+    await database.updateDetection(detection.id, {
       localSnapshotPath: null,
       localVideoPath: null,
     });
@@ -216,7 +217,7 @@ export function createEventProcessor({
   }
 
   async function applyTemporalMatchingToStoredDetections(checkIns) {
-    const detections = await firebaseClient.getDetections();
+    const detections = await database.getDetections();
     const options = getMatchingOptions();
 
     for (const detection of detections) {
@@ -225,7 +226,7 @@ export function createEventProcessor({
       }
 
       const plate = normalizePlate(detection.plate);
-      const plateState = plate ? await firebaseClient.getPlateState(plate) : undefined;
+      const plateState = plate ? await database.getPlateState(plate) : undefined;
       if (
         plateState?.activeReservationCode &&
         plateState.activeReservationCode !== detection.reservationCode
@@ -246,7 +247,7 @@ export function createEventProcessor({
         continue;
       }
 
-      await firebaseClient.updateDetection(detection.id, {
+      await database.updateDetection(detection.id, {
         parkingStatus: updated.parkingStatus,
         associationStatus: updated.associationStatus,
         associationMethod: updated.associationMethod,
@@ -275,14 +276,18 @@ export function createEventProcessor({
       return directPayload;
     }
 
-    const checkIns = await firebaseClient.getCheckIns();
+    const checkIns = await database.getCheckIns();
     return applyTemporalAssociation(directPayload, checkIns, getMatchingOptions());
   }
 
   async function processFrigateDetection(input) {
+    const detectionTenantId = input.tenantId || tenantId;
     const reservations = await getReservations();
     const detectionPayload = await buildDetectionWithTemporalMatching(input, reservations);
-    const createdDetection = await firebaseClient.createDetection(detectionPayload);
+    const createdDetection = await database.createDetection({
+      ...detectionPayload,
+      tenantId: detectionTenantId,
+    });
     const detection = await clearAuthorizedEvidence(createdDetection);
     await updatePlateStateFromDetection(detection);
 
@@ -294,7 +299,7 @@ export function createEventProcessor({
       console.log(`[Reservations] No unique match: ${detectionPayload.associationStatus}`);
     }
 
-    console.log("[Firebase] Detection stored");
+    console.log("[Database] Detection stored");
     onDetectionStored?.(detection);
     return detection;
   }
@@ -333,7 +338,7 @@ export function createEventProcessor({
     const now = new Date().toISOString();
 
     if (!reservationCode) {
-      await firebaseClient.updateStripeDiagnostic({
+      await database.updateStripeDiagnostic({
         lastEventReceivedAt: now,
         lastStripeEventId: input.stripeEventId,
         lastReservationNumber: "",
@@ -345,7 +350,8 @@ export function createEventProcessor({
 
     const reservations = await getReservations();
     const reservation = findReservationByCode(reservations, reservationCode);
-    const checkIn = await firebaseClient.createCheckIn({
+    const checkIn = await database.createCheckIn({
+      tenantId: input.tenantId || tenantId,
       reservationCode,
       fullName: reservation?.name || fullName || "No name",
       checkInAt: input.checkInAt || now,
@@ -362,7 +368,7 @@ export function createEventProcessor({
       createdAt: now,
     });
 
-    await firebaseClient.updateStripeDiagnostic({
+    await database.updateStripeDiagnostic({
       lastEventReceivedAt: now,
       lastStripeEventId: input.stripeEventId,
       lastCheckInCreatedAt: checkIn.createdAt,
@@ -373,7 +379,7 @@ export function createEventProcessor({
       lastError: null,
     });
 
-    await applyTemporalMatchingToStoredDetections(await firebaseClient.getCheckIns());
+    await applyTemporalMatchingToStoredDetections(await database.getCheckIns());
     onCheckInStored?.(checkIn);
     return checkIn;
   }
@@ -472,7 +478,7 @@ export function createEventProcessor({
     processFrigateEvent,
     refreshExpiredPlateStates,
     releasePlateAssignment(plate) {
-      return firebaseClient.releasePlateAssignment(normalizePlate(plate));
+      return database.releasePlateAssignment(normalizePlate(plate));
     },
   };
 }

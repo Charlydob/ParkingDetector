@@ -1,0 +1,9 @@
+node_modules
+dist
+.git
+.env
+.env.*
+backend/data
+backend/evidence
+.codex-logs
+*.tsbuildinfo

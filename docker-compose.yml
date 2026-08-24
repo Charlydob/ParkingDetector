@@ -1,0 +1,98 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-hotelapp}
+      POSTGRES_USER: ${POSTGRES_USER:-hotelapp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - hotelapp
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: production
+      APP_DOMAIN: ${APP_DOMAIN:-hotelapp.charlydob.com}
+      APP_ORIGIN: ${APP_ORIGIN:-https://hotelapp.charlydob.com}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-hotelapp_session}
+      SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-14}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      BACKEND_HOST: 0.0.0.0
+      BACKEND_PORT: 3001
+      DATA_DIR: /data
+      EVIDENCE_DIR: /evidence
+      RESERVATION_CACHE_SECONDS: ${RESERVATION_CACHE_SECONDS:-30}
+      CHECKOUT_COOLDOWN_SECONDS: ${CHECKOUT_COOLDOWN_SECONDS:-120}
+      PUBLIC_CHECKOUT_RATE_LIMIT: ${PUBLIC_CHECKOUT_RATE_LIMIT:-30}
+      PUBLIC_CHECKOUT_RATE_WINDOW_MS: ${PUBLIC_CHECKOUT_RATE_WINDOW_MS:-60000}
+      MATCH_TIME_WINDOW_MINUTES: ${MATCH_TIME_WINDOW_MINUTES:-15}
+      MATCH_AUTO_CONFIDENCE_THRESHOLD: ${MATCH_AUTO_CONFIDENCE_THRESHOLD:-0.8}
+      PLATE_COOLDOWN_MINUTES: ${PLATE_COOLDOWN_MINUTES:-15}
+      PLATE_PRESENCE_TIMEOUT_MINUTES: ${PLATE_PRESENCE_TIMEOUT_MINUTES:-30}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - app-data:/data
+      - app-evidence:/evidence
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:3001/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - hotelapp
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:-hotelapp.charlydob.com}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    depends_on:
+      backend:
+        condition: service_started
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - hotelapp
+
+networks:
+  hotelapp:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  app-data:
+  app-evidence:
+  caddy-data:
+  caddy-config:

@@ -15,7 +15,8 @@ import {
 
 const WEBHOOK_PAYLOAD_PATH = path.resolve(
   process.cwd(),
-  "backend/data/reservation-webhook-payload.json",
+  process.env.RESERVATION_WEBHOOK_PAYLOAD_PATH ||
+    path.join(process.env.DATA_DIR || "backend/data", "reservation-webhook-payload.json"),
 );
 
 let cache = {

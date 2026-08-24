@@ -5,15 +5,39 @@ import path from "node:path";
 import Stripe from "stripe";
 import { STRIPE_FIELD_MAPPING } from "./config/stripeMapping.js";
 import {
-  disconnectReservationSource,
-  disconnectStripeSettings,
   getFrigateSettings,
-  getPublicIntegrationSettings,
   getReservationSettings,
   getStripeSettings,
   loadLocalSettings,
-  updateLocalSettings,
 } from "./localSettings.js";
+import { MODULE_REGISTRY } from "./moduleRegistry.js";
+import { authenticateRequest } from "./middleware/auth.js";
+import { createRateLimiter } from "./rateLimiter.js";
+import { handleAdminRoute } from "./routes/adminRoutes.js";
+import {
+  handleCheckoutRoute,
+  handlePublicCheckoutRoute,
+} from "./routes/checkoutRoutes.js";
+import { handleInvitationRoute } from "./routes/invitationRoutes.js";
+import { handleUserManagementRoute } from "./routes/userManagementRoutes.js";
+import {
+  DEFAULT_TENANT_ID,
+  ensureBootstrapTenant,
+  requireModule,
+  requireTenant,
+  requireTenantAdmin,
+} from "./services/tenantService.js";
+import {
+  getTenantSettings,
+  getPublicTenantSettings,
+  updateTenantSettings,
+} from "./services/tenantSettingsService.js";
+import {
+  clearSessionCookieHeader,
+  loginWithPassword,
+  sessionCookieHeader,
+  destroyRequestSession,
+} from "./services/sessionService.js";
 
 function loadEnvFile() {
   const envPath = path.resolve(process.cwd(), ".env");
@@ -41,19 +65,24 @@ function loadEnvFile() {
   }
 }
 
-function sendJson(response, statusCode, payload) {
+function sendJson(response, statusCode, payload, headers = {}, request) {
   response.writeHead(statusCode, {
     "Content-Type": "application/json",
-    ...corsHeaders(),
+    ...corsHeaders(request),
+    ...headers,
   });
   response.end(JSON.stringify(payload));
 }
 
-function corsHeaders() {
+function corsHeaders(request) {
+  const allowedOrigin = process.env.CORS_ORIGIN || process.env.APP_ORIGIN || "";
+  const requestOrigin = request?.headers?.origin;
+
   return {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Stripe-Signature",
+    "Access-Control-Allow-Origin": allowedOrigin || requestOrigin || "*",
+    "Access-Control-Allow-Credentials": "true",
+    "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Stripe-Signature, X-Tenant-Id, X-Tenant-Slug",
   };
 }
 
@@ -210,7 +239,7 @@ const [
     testReservationConnection,
   },
   { createFileStorage },
-  { createFirebaseClient },
+  { createDatabaseClient },
   { createFrigateClient },
   { createPlateCooldownStore },
   { createProcessedEventsStore },
@@ -218,13 +247,14 @@ const [
   import("./eventProcessor.js"),
   import("./reservationService.js"),
   import("./fileStorage.js"),
-  import("./firebaseClient.js"),
+  import("./databaseClient.js"),
   import("./frigateClient.js"),
   import("./plateCooldown.js"),
   import("./processedEvents.js"),
 ]);
 
 const port = Number(process.env.BACKEND_PORT || 3001);
+const host = process.env.BACKEND_HOST || "0.0.0.0";
 const status = {
   running: true,
   frigateConnected: false,
@@ -234,7 +264,12 @@ const status = {
   frigateVersion: null,
 };
 
-const firebaseClient = createFirebaseClient();
+const database = createDatabaseClient();
+await ensureBootstrapTenant(database);
+const publicCheckoutLimiter = createRateLimiter({
+  windowMs: Number(process.env.PUBLIC_CHECKOUT_RATE_WINDOW_MS || 60_000),
+  max: Number(process.env.PUBLIC_CHECKOUT_RATE_LIMIT || 30),
+});
 let cachedFrigateClient;
 let cachedFrigateBaseUrl = "";
 function getActiveFrigateClient() {
@@ -270,7 +305,11 @@ const frigateClient = {
 const fileStorage = createFileStorage();
 const processedEvents = await createProcessedEventsStore();
 const processedStripeEvents = await createProcessedEventsStore(
-  path.resolve(process.cwd(), "backend/data/processed-stripe-events.json"),
+  path.resolve(
+    process.cwd(),
+    process.env.PROCESSED_STRIPE_EVENTS_PATH ||
+      path.join(process.env.DATA_DIR || "backend/data", "processed-stripe-events.json"),
+  ),
 );
 const plateCooldown = await createPlateCooldownStore();
 function getStripeClient(secretKey = getStripeSettings().secretKey) {
@@ -279,11 +318,12 @@ function getStripeClient(secretKey = getStripeSettings().secretKey) {
 await fileStorage.ensureDirectories();
 
 const eventProcessor = createEventProcessor({
-  firebaseClient,
+  database,
   frigateClient,
   fileStorage,
   processedEvents,
   plateCooldown,
+  tenantId: DEFAULT_TENANT_ID,
   onDetectionStored(detection) {
     status.lastEventProcessed = detection.detectedAt;
   },
@@ -291,6 +331,41 @@ const eventProcessor = createEventProcessor({
     status.lastCheckInCreated = checkIn.createdAt;
   },
 });
+
+function detectionBelongsToTenant(detection, tenantId) {
+  return detection?.tenantId === tenantId || (!detection?.tenantId && tenantId === DEFAULT_TENANT_ID);
+}
+
+function requireDetectionForTenant(detection, tenantId) {
+  if (!detectionBelongsToTenant(detection, tenantId)) {
+    const error = new Error("Detection not found.");
+    error.statusCode = 404;
+    throw error;
+  }
+}
+
+function sendRouteResult(response, result) {
+  if (!result) {
+    return false;
+  }
+
+  sendJson(response, result.status, result.payload, result.headers || {});
+  return true;
+}
+
+async function getProtectedContext(request) {
+  const session = await authenticateRequest(request, database);
+  return { database, session, publicCheckoutLimiter };
+}
+
+function logUnexpectedError(scope, error) {
+  const statusCode = error?.statusCode || 500;
+
+  if (statusCode >= 500) {
+    console.error(`[${scope}] Unexpected error`);
+    console.error(error?.stack || error);
+  }
+}
 
 try {
   await forceRefreshReservations();
@@ -345,8 +420,190 @@ const server = createServer(async (request, response) => {
   const pathname = parsedUrl.pathname;
 
   try {
+    if (request.method === "GET" && pathname === "/api/health") {
+      let databaseConnected = false;
+      try {
+        databaseConnected = await database.testConnection();
+      } catch {
+        databaseConnected = false;
+      }
+
+      sendJson(response, databaseConnected ? 200 : 503, {
+        ok: databaseConnected,
+        database: { connected: databaseConnected },
+      });
+      return;
+    }
+
+    if (pathname.startsWith("/api/public/")) {
+      const result = await handlePublicCheckoutRoute({
+        request,
+        pathname,
+        context: { database, publicCheckoutLimiter },
+      });
+
+      if (sendRouteResult(response, result)) {
+        return;
+      }
+    }
+
+    if (request.method === "POST" && pathname === "/api/auth/login") {
+      const { user, session } = await loginWithPassword(database, await readJsonBody(request));
+      sendJson(
+        response,
+        200,
+        { success: true, user: { id: user.id, email: user.email, displayName: user.displayName } },
+        { "Set-Cookie": sessionCookieHeader(session.id, session.expiresAt) },
+      );
+      return;
+    }
+
+    if (request.method === "POST" && pathname === "/api/auth/logout") {
+      await destroyRequestSession(database, request);
+      sendJson(response, 200, { success: true }, { "Set-Cookie": clearSessionCookieHeader() });
+      return;
+    }
+
+    if (request.method === "GET" && pathname === "/api/auth/session") {
+      try {
+        const session = await authenticateRequest(request, database);
+        sendJson(response, 200, session);
+      } catch (error) {
+        logUnexpectedError("AuthSession", error);
+        sendJson(response, error.statusCode || 500, {
+          error: error instanceof Error ? error.message : "Unexpected server error",
+        });
+      }
+      return;
+    }
+
+    if (request.method === "GET" && pathname.startsWith("/api/invitations/")) {
+      const result = await handleInvitationRoute({
+        request,
+        pathname,
+        context: { database },
+      });
+
+      if (sendRouteResult(response, result)) {
+        return;
+      }
+    }
+
+    if (request.method === "GET" && pathname === "/api/modules") {
+      await authenticateRequest(request, database);
+      sendJson(response, 200, MODULE_REGISTRY);
+      return;
+    }
+
+    if (pathname.startsWith("/api/checkout/")) {
+      const result = await handleCheckoutRoute({
+        request,
+        pathname,
+        parsedUrl,
+        body: request.method === "GET" ? {} : await readJsonBody(request),
+        context: await getProtectedContext(request),
+      });
+
+      if (sendRouteResult(response, result)) {
+        return;
+      }
+    }
+
+    if (pathname.startsWith("/api/admin/")) {
+      const result = await handleAdminRoute({
+        request,
+        pathname,
+        body: request.method === "GET" ? {} : await readJsonBody(request),
+        context: await getProtectedContext(request),
+      });
+
+      if (sendRouteResult(response, result)) {
+        return;
+      }
+    }
+
+    if (pathname.startsWith("/api/tenant/")) {
+      const result = await handleUserManagementRoute({
+        request,
+        pathname,
+        body: request.method === "GET" ? {} : await readJsonBody(request),
+        context: await getProtectedContext(request),
+      });
+
+      if (sendRouteResult(response, result)) {
+        return;
+      }
+    }
+
+    if (request.method === "POST" && pathname.startsWith("/api/invitations/")) {
+      const result = await handleInvitationRoute({
+        request,
+        pathname,
+        body: await readJsonBody(request),
+        context: { database },
+      });
+
+      if (sendRouteResult(response, result)) {
+        return;
+      }
+    }
+
+    if (request.method === "GET" && pathname === "/api/parking/detections") {
+      const context = await getProtectedContext(request);
+      const tenantId = await requireModule(database, context.session, "parking");
+      const detections = (await database.getDetections())
+        .filter((detection) => detectionBelongsToTenant(detection, tenantId))
+        .sort((left, right) => new Date(right.detectedAt).getTime() - new Date(left.detectedAt).getTime());
+      sendJson(response, 200, detections);
+      return;
+    }
+
+    const detectionReviewMatch = pathname.match(/^\/api\/parking\/detections\/([^/]+)\/review$/);
+    if (request.method === "PATCH" && detectionReviewMatch) {
+      const context = await getProtectedContext(request);
+      const tenantId = await requireModule(database, context.session, "parking");
+      const detectionId = decodeURIComponent(detectionReviewMatch[1]);
+      const detection = await database.getDetection(detectionId);
+      requireDetectionForTenant(detection, tenantId);
+      const body = await readJsonBody(request);
+      const reviewStatus = ["pending", "confirmed", "dismissed"].includes(body.reviewStatus)
+        ? body.reviewStatus
+        : "pending";
+      await database.updateDetection(detectionId, { reviewStatus });
+      sendJson(response, 200, { success: true });
+      return;
+    }
+
+    const detectionConfirmMatch = pathname.match(/^\/api\/parking\/detections\/([^/]+)\/confirm$/);
+    if (request.method === "POST" && detectionConfirmMatch) {
+      const context = await getProtectedContext(request);
+      const tenantId = await requireModule(database, context.session, "parking");
+      const detectionId = decodeURIComponent(detectionConfirmMatch[1]);
+      const detection = await database.getDetection(detectionId);
+      requireDetectionForTenant(detection, tenantId);
+      const body = await readJsonBody(request);
+      const candidate = body.candidate || {};
+      await database.updateDetection(detectionId, {
+        associationStatus: "matched",
+        reviewStatus: "confirmed",
+        associationMethod: "temporal",
+        reservationCode: candidate.reservationCode,
+        room: candidate.room ?? null,
+        guestName: candidate.fullName,
+        guestEmail: candidate.guestEmail ?? null,
+        checkInAt: candidate.checkInAt,
+        timeDifferenceMinutes: candidate.timeDifferenceMinutes,
+        confidence: candidate.confidence,
+        parkingStatus: candidate.parkingStatus ?? "unknown",
+        associationCandidates: null,
+      });
+      sendJson(response, 200, { success: true });
+      return;
+    }
+
     const evidenceMatch = pathname.match(/^\/api\/evidence\/(snapshots|clips)\/([^/]+)$/);
     if (request.method === "GET" && evidenceMatch) {
+      await getProtectedContext(request);
       const [, collection, filename] = evidenceMatch;
       const kind = collection === "clips" ? "clip" : "snapshot";
       const contentType = kind === "clip" ? "video/mp4" : "image/jpeg";
@@ -359,8 +616,12 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "GET" && pathname === "/api/status") {
+      const context = await getProtectedContext(request);
       await eventProcessor.refreshExpiredPlateStates();
-      const plateStateDiagnostics = await firebaseClient.getPlateStateDiagnostics();
+      const plateStateDiagnostics = await database.getPlateStateDiagnostics();
+      const tenantSettings = context.session.activeTenantId
+        ? await getTenantSettings(database, context.session.activeTenantId)
+        : undefined;
 
       sendJson(response, 200, {
         ...status,
@@ -371,37 +632,73 @@ const server = createServer(async (request, response) => {
         processedStripeEvents: processedStripeEvents.count(),
         plateCooldownEntries: plateCooldown.count(),
         ...plateStateDiagnostics,
-        stripeConfigured: getPublicIntegrationSettings().stripe.connected,
+        stripeConfigured: Boolean(
+          tenantSettings?.stripe?.enabled &&
+            tenantSettings?.stripe?.secretKey &&
+            tenantSettings?.stripe?.webhookSecret,
+        ),
         ...getReservationDiagnostics(),
       });
       return;
     }
 
     if (request.method === "GET" && pathname === "/api/settings/integrations") {
-      let firebaseConnected = false;
+      const context = await getProtectedContext(request);
+      requireTenant(context.session);
+      let databaseConnected = false;
       try {
-        firebaseConnected = await firebaseClient.testConnection();
+        databaseConnected = await database.testConnection();
       } catch {
-        firebaseConnected = false;
+        databaseConnected = false;
       }
 
+      const tenantSettings = await getPublicTenantSettings(
+        database,
+        context.session.activeTenantId,
+      );
+
       sendJson(response, 200, {
-        ...getPublicIntegrationSettings({
-          frigate: {
-            connected: status.frigateConnected,
-            lastPollAt: status.lastPollAt,
-            lastEvent: status.frigateLastEvent,
-            version: status.frigateVersion,
-          },
-        }),
+        ...tenantSettings,
+        frigate: {
+          ...tenantSettings.frigate,
+          lastPollAt: status.lastPollAt,
+          lastEvent: status.frigateLastEvent,
+          version: status.frigateVersion,
+        },
         backend: { online: true },
-        firebase: { connected: firebaseConnected },
+        database: { connected: databaseConnected },
         reservationDiagnostics: getReservationDiagnostics(),
       });
       return;
     }
 
+    if (request.method === "POST" && pathname === "/api/settings/notifications") {
+      const context = await getProtectedContext(request);
+      const tenantId = requireTenant(context.session);
+      requireTenantAdmin(context.session, tenantId);
+      const body = await readJsonBody(request);
+      const telegram = body.telegram || {};
+      const notificationPatch = {
+        enabled: Boolean(telegram.enabled),
+        chatId: String(telegram.chatId ?? "").trim(),
+      };
+
+      if (String(telegram.botToken ?? "").trim()) {
+        notificationPatch.botToken = String(telegram.botToken ?? "").trim();
+      }
+
+      await updateTenantSettings(database, tenantId, {
+        notifications: {
+          telegram: notificationPatch,
+        },
+      });
+      sendJson(response, 200, await getPublicTenantSettings(database, tenantId));
+      return;
+    }
+
     if (request.method === "POST" && pathname === "/api/settings/google-sheets/test") {
+      const context = await getProtectedContext(request);
+      requireTenantAdmin(context.session);
       const body = await readJsonBody(request);
       const csvUrl = String(body.csvUrl ?? "").trim();
       const result = await testReservationConnection("googleSheets", {
@@ -413,26 +710,42 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && pathname === "/api/settings/google-sheets") {
+      const context = await getProtectedContext(request);
+      const tenantId = requireTenant(context.session);
+      requireTenantAdmin(context.session, tenantId);
       const body = await readJsonBody(request);
-      await updateLocalSettings({
-        reservationSource: "googleSheets",
-        googleSheets: { csvUrl: String(body.csvUrl ?? "").trim() },
+      await updateTenantSettings(database, tenantId, {
+        reservations: {
+          enabled: true,
+          source: "googleSheets",
+          googleSheets: { csvUrl: String(body.csvUrl ?? "").trim() },
+        },
       });
-      await forceRefreshReservations();
       sendJson(response, 200, {
-        ...getPublicIntegrationSettings(),
+        ...(await getPublicTenantSettings(database, tenantId)),
         reservationDiagnostics: getReservationDiagnostics(),
       });
       return;
     }
 
     if (request.method === "DELETE" && pathname === "/api/settings/google-sheets") {
-      await disconnectReservationSource("googleSheets");
-      sendJson(response, 200, getPublicIntegrationSettings());
+      const context = await getProtectedContext(request);
+      const tenantId = requireTenant(context.session);
+      requireTenantAdmin(context.session, tenantId);
+      await updateTenantSettings(database, tenantId, {
+        reservations: {
+          enabled: false,
+          source: null,
+          googleSheets: { csvUrl: "" },
+        },
+      });
+      sendJson(response, 200, await getPublicTenantSettings(database, tenantId));
       return;
     }
 
     if (request.method === "POST" && pathname === "/api/settings/json-feed/test") {
+      const context = await getProtectedContext(request);
+      requireTenantAdmin(context.session);
       const body = await readJsonBody(request);
       const jsonUrl = String(body.url ?? "").trim();
       const result = await testReservationConnection("json", {
@@ -446,57 +759,86 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && pathname === "/api/settings/json-feed") {
+      const context = await getProtectedContext(request);
+      const tenantId = requireTenant(context.session);
+      requireTenantAdmin(context.session, tenantId);
       const body = await readJsonBody(request);
-      const currentSettings = getReservationSettings();
-      await updateLocalSettings({
-        reservationSource: "json",
-        jsonFeed: {
-          url: String(body.url ?? "").trim(),
-          jsonPath: String(body.jsonPath ?? "").trim(),
-          auth: cleanJsonAuthInput(body.auth, currentSettings.jsonAuth),
+      const currentSettings = await getTenantSettings(database, tenantId);
+      await updateTenantSettings(database, tenantId, {
+        reservations: {
+          enabled: true,
+          source: "json",
+          jsonFeed: {
+            url: String(body.url ?? "").trim(),
+            jsonPath: String(body.jsonPath ?? "").trim(),
+            auth: cleanJsonAuthInput(body.auth, currentSettings.reservations?.jsonFeed?.auth),
+          },
         },
       });
-      await forceRefreshReservations();
       sendJson(response, 200, {
-        ...getPublicIntegrationSettings(),
+        ...(await getPublicTenantSettings(database, tenantId)),
         reservationDiagnostics: getReservationDiagnostics(),
       });
       return;
     }
 
     if (request.method === "DELETE" && pathname === "/api/settings/json-feed") {
-      await disconnectReservationSource("json");
-      sendJson(response, 200, getPublicIntegrationSettings());
+      const context = await getProtectedContext(request);
+      const tenantId = requireTenant(context.session);
+      requireTenantAdmin(context.session, tenantId);
+      await updateTenantSettings(database, tenantId, {
+        reservations: {
+          enabled: false,
+          source: null,
+          jsonFeed: { url: "", jsonPath: "", auth: { type: "none" } },
+        },
+      });
+      sendJson(response, 200, await getPublicTenantSettings(database, tenantId));
       return;
     }
 
     if (request.method === "POST" && pathname === "/api/settings/reservation-webhook") {
+      const context = await getProtectedContext(request);
+      const tenantId = requireTenant(context.session);
+      requireTenantAdmin(context.session, tenantId);
       const body = await readJsonBody(request);
-      const currentSettings = getReservationSettings();
-      await updateLocalSettings({
-        reservationSource: "reservationWebhook",
-        jsonFeed: {
-          jsonPath: String(body.jsonPath ?? "").trim(),
-        },
-        reservationWebhook: {
-          headerName:
-            String(body.headerName ?? "").trim() ||
-            currentSettings.reservationWebhook.headerName,
-          secret:
-            String(body.secret ?? "").trim() ||
-            currentSettings.reservationWebhook.secret,
+      const currentSettings = await getTenantSettings(database, tenantId);
+      await updateTenantSettings(database, tenantId, {
+        reservations: {
+          enabled: true,
+          source: "reservationWebhook",
+          jsonFeed: {
+            jsonPath: String(body.jsonPath ?? "").trim(),
+          },
+          reservationWebhook: {
+            headerName:
+              String(body.headerName ?? "").trim() ||
+              currentSettings.reservations?.reservationWebhook?.headerName,
+            secret:
+              String(body.secret ?? "").trim() ||
+              currentSettings.reservations?.reservationWebhook?.secret,
+          },
         },
       });
       sendJson(response, 200, {
-        ...getPublicIntegrationSettings(),
+        ...(await getPublicTenantSettings(database, tenantId)),
         reservationDiagnostics: getReservationDiagnostics(),
       });
       return;
     }
 
     if (request.method === "DELETE" && pathname === "/api/settings/reservation-webhook") {
-      await disconnectReservationSource("reservationWebhook");
-      sendJson(response, 200, getPublicIntegrationSettings());
+      const context = await getProtectedContext(request);
+      const tenantId = requireTenant(context.session);
+      requireTenantAdmin(context.session, tenantId);
+      await updateTenantSettings(database, tenantId, {
+        reservations: {
+          enabled: false,
+          source: null,
+          reservationWebhook: { headerName: "x-hotel-automation-secret", secret: "" },
+        },
+      });
+      sendJson(response, 200, await getPublicTenantSettings(database, tenantId));
       return;
     }
 
@@ -521,6 +863,8 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && pathname === "/api/settings/reservation-source/preview") {
+      const context = await getProtectedContext(request);
+      requireTenantAdmin(context.session);
       const body = await readJsonBody(request);
       const preview = await previewReservationSource(
         body.source || getReservationSettings().source,
@@ -530,23 +874,31 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && pathname === "/api/settings/reservation-mapping") {
+      const context = await getProtectedContext(request);
+      const tenantId = requireTenant(context.session);
+      requireTenantAdmin(context.session, tenantId);
       const body = await readJsonBody(request);
-      await updateLocalSettings({ reservationMapping: body.mapping ?? {} });
-      await forceRefreshReservations();
+      await updateTenantSettings(database, tenantId, {
+        reservations: { mapping: body.mapping ?? {} },
+      });
       sendJson(response, 200, {
-        ...getPublicIntegrationSettings(),
+        ...(await getPublicTenantSettings(database, tenantId)),
         reservationDiagnostics: getReservationDiagnostics(),
       });
       return;
     }
 
     if (request.method === "POST" && pathname === "/api/settings/reservation-mapping/test") {
+      const context = await getProtectedContext(request);
+      requireTenantAdmin(context.session);
       const body = await readJsonBody(request);
       sendJson(response, 200, await testReservationMapping(body.mapping ?? {}));
       return;
     }
 
     if (request.method === "POST" && pathname === "/api/settings/stripe/test") {
+      const context = await getProtectedContext(request);
+      requireTenantAdmin(context.session);
       const body = await readJsonBody(request);
       const secretKey = String(body.secretKey ?? getStripeSettings().secretKey ?? "").trim();
 
@@ -561,26 +913,37 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && pathname === "/api/settings/stripe") {
+      const context = await getProtectedContext(request);
+      const tenantId = requireTenant(context.session);
+      requireTenantAdmin(context.session, tenantId);
       const body = await readJsonBody(request);
-      const currentSettings = getStripeSettings();
-      await updateLocalSettings({
+      const currentSettings = await getTenantSettings(database, tenantId);
+      await updateTenantSettings(database, tenantId, {
         stripe: {
-          secretKey: String(body.secretKey ?? "").trim() || currentSettings.secretKey,
+          enabled: true,
+          secretKey: String(body.secretKey ?? "").trim() || currentSettings.stripe?.secretKey,
           webhookSecret:
-            String(body.webhookSecret ?? "").trim() || currentSettings.webhookSecret,
+            String(body.webhookSecret ?? "").trim() || currentSettings.stripe?.webhookSecret,
         },
       });
-      sendJson(response, 200, getPublicIntegrationSettings().stripe);
+      sendJson(response, 200, (await getPublicTenantSettings(database, tenantId)).stripe);
       return;
     }
 
     if (request.method === "DELETE" && pathname === "/api/settings/stripe") {
-      await disconnectStripeSettings();
-      sendJson(response, 200, getPublicIntegrationSettings().stripe);
+      const context = await getProtectedContext(request);
+      const tenantId = requireTenant(context.session);
+      requireTenantAdmin(context.session, tenantId);
+      await updateTenantSettings(database, tenantId, {
+        stripe: { enabled: false, secretKey: "", webhookSecret: "" },
+      });
+      sendJson(response, 200, (await getPublicTenantSettings(database, tenantId)).stripe);
       return;
     }
 
     if (request.method === "POST" && pathname === "/api/settings/frigate/test") {
+      const context = await getProtectedContext(request);
+      requireTenantAdmin(context.session);
       const body = await readJsonBody(request);
       const baseUrl = String(body.baseUrl ?? getFrigateSettings().baseUrl).trim();
       const testClient = createFrigateClient({ baseUrl });
@@ -590,18 +953,27 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && pathname === "/api/settings/frigate") {
+      const context = await getProtectedContext(request);
+      const tenantId = requireTenant(context.session);
+      requireTenantAdmin(context.session, tenantId);
       const body = await readJsonBody(request);
-      await updateLocalSettings({
+      await updateTenantSettings(database, tenantId, {
         frigate: {
+          enabled: true,
           baseUrl: String(body.baseUrl ?? "").trim(),
           pollIntervalMs: Number(body.pollIntervalMs || getFrigateSettings().pollIntervalMs),
+          cameras: Array.isArray(body.cameras)
+            ? body.cameras.map((camera) => String(camera).trim()).filter(Boolean)
+            : undefined,
         },
       });
-      sendJson(response, 200, getPublicIntegrationSettings().frigate);
+      sendJson(response, 200, (await getPublicTenantSettings(database, tenantId)).frigate);
       return;
     }
 
     if (request.method === "GET" && pathname === "/api/reservations/debug") {
+      const context = await getProtectedContext(request);
+      await requireModule(database, context.session, "parking");
       try {
         await getReservations();
       } catch {
@@ -617,6 +989,8 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && pathname === "/api/reservations/refresh") {
+      const context = await getProtectedContext(request);
+      await requireModule(database, context.session, "parking");
       try {
         await forceRefreshReservations();
         sendJson(response, 200, {
@@ -654,7 +1028,7 @@ const server = createServer(async (request, response) => {
           stripeSettings.webhookSecret,
         );
       } catch (error) {
-        await firebaseClient.updateStripeDiagnostic({
+        await database.updateStripeDiagnostic({
           lastEventReceivedAt: new Date().toISOString(),
           lastStatus: "invalid event",
           lastError: error instanceof Error ? error.message : "Invalid Stripe signature.",
@@ -686,7 +1060,7 @@ const server = createServer(async (request, response) => {
       }
 
       if (!checkInInput.reservationCode) {
-        await firebaseClient.updateStripeDiagnostic({
+        await database.updateStripeDiagnostic({
           lastEventReceivedAt: new Date().toISOString(),
           lastStripeEventId: checkInInput.stripeEventId,
           lastReservationNumber: "",
@@ -706,17 +1080,20 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "DELETE" && pathname.startsWith("/api/detections/")) {
+      const context = await getProtectedContext(request);
+      const tenantId = await requireModule(database, context.session, "parking");
       const detectionId = decodeURIComponent(pathname.replace("/api/detections/", ""));
 
       try {
         console.log(`[Detection] Delete requested: ${detectionId}`);
-        const detection = await firebaseClient.getDetection(detectionId);
+        const detection = await database.getDetection(detectionId);
 
         if (!detection) {
           console.warn(`[Detection] Delete failed: detection not found (${detectionId})`);
           sendJson(response, 404, { error: "Detection not found." });
           return;
         }
+        requireDetectionForTenant(detection, tenantId);
 
         if (detection.localSnapshotPath) {
           await fileStorage.deleteEvidencePath(detection.localSnapshotPath);
@@ -728,8 +1105,8 @@ const server = createServer(async (request, response) => {
           console.log(`[Evidence] Clip deleted: ${detection.localVideoPath}`);
         }
 
-        await firebaseClient.deleteDetection(detectionId);
-        console.log(`[Firebase] Detection deleted: ${detectionId}`);
+        await database.deleteDetection(detectionId);
+        console.log(`[Database] Detection deleted: ${detectionId}`);
         sendJson(response, 200, { success: true, deletedId: detectionId });
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown delete failure.";
@@ -741,6 +1118,8 @@ const server = createServer(async (request, response) => {
 
     const plateReleaseMatch = pathname.match(/^\/api\/plates\/([^/]+)\/release$/);
     if (request.method === "POST" && plateReleaseMatch) {
+      const context = await getProtectedContext(request);
+      await requireModule(database, context.session, "parking");
       const [, rawPlate] = plateReleaseMatch;
       await eventProcessor.releasePlateAssignment(decodeURIComponent(rawPlate));
       sendJson(response, 200, { success: true });
@@ -748,6 +1127,8 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && pathname === "/api/test-detection") {
+      const context = await getProtectedContext(request);
+      const tenantId = await requireModule(database, context.session, "parking");
       const body = await readJsonBody(request);
       const plate = String(body.plate ?? "").trim();
       const camera = String(body.camera ?? "test").trim();
@@ -761,6 +1142,7 @@ const server = createServer(async (request, response) => {
       }
 
       const detection = await eventProcessor.processDetectionWithCooldown({
+        tenantId,
         plate,
         camera,
         detectedAt,
@@ -775,6 +1157,8 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && pathname === "/api/test-checkin") {
+      const context = await getProtectedContext(request);
+      const tenantId = await requireModule(database, context.session, "checkout");
       const body = await readJsonBody(request);
       const reservationCode = String(body.reservationCode ?? "").trim();
       const fullName = String(body.fullName ?? "").trim();
@@ -787,6 +1171,7 @@ const server = createServer(async (request, response) => {
       }
 
       const checkIn = await eventProcessor.processCheckInEvent({
+        tenantId,
         reservationCode,
         fullName,
         checkInAt: new Date().toISOString(),
@@ -798,14 +1183,15 @@ const server = createServer(async (request, response) => {
 
     sendJson(response, 404, { error: "Not found" });
   } catch (error) {
-    sendJson(response, 500, {
+    logUnexpectedError("HTTP", error);
+    sendJson(response, error.statusCode || 500, {
       error: error instanceof Error ? error.message : "Unexpected server error",
     });
   }
 });
 
-server.listen(port, "127.0.0.1", () => {
-  console.log(`[Backend] Listening on http://127.0.0.1:${port}`);
+server.listen(port, host, () => {
+  console.log(`[Backend] Listening on http://${host}:${port}`);
 });
 
 function scheduleNextPoll() {
