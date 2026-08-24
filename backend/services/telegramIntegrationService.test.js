@@ -321,7 +321,7 @@ test("Telegram housekeeping Ready uses private double confirmation and creates o
       messageId: "77",
     });
 
-    assert.equal(savedBoard.board.messageId, "77");
+    assert.equal(savedBoard.board.messageId, 77);
 
     const firstClick = await handleHousekeepingAction(database, {
       tenantId: "hotel-a",
@@ -367,6 +367,27 @@ test("Telegram housekeeping Ready uses private double confirmation and creates o
       process.env.N8N_CHECKOUT_WEBHOOK_SECRET = originalSecret;
     }
   }
+});
+
+test("Telegram housekeeping board persists Telegram numeric message_id for later fetches", async () => {
+  const database = createFakeDatabase({
+    tenants: {
+      "hotel-a": { id: "hotel-a", name: "Hotel A", slug: "hotel-a", active: true },
+    },
+  });
+
+  await saveHousekeepingBoardMessage(database, {
+    tenantId: "hotel-a",
+    chat: { id: -100123456789 },
+    message_id: 12345,
+    message_thread_id: 12,
+  });
+
+  const board = await getHousekeepingBoard(database, { tenantId: "hotel-a" });
+
+  assert.equal(board.board.messageId, 12345);
+  assert.equal(board.board.chatId, "-100123456789");
+  assert.equal(board.board.threadId, 12);
 });
 
 test("Telegram housekeeping board keeps numeric message id across checkout refreshes", async () => {
@@ -420,16 +441,29 @@ test("Telegram housekeeping board keeps numeric message id across checkout refre
     });
 
     assert.equal(savedBoard.board.chatId, "-100123456789");
-    assert.equal(savedBoard.board.messageId, "77");
-    assert.equal(savedBoard.board.threadId, "12");
+    assert.equal(savedBoard.board.messageId, 77);
+    assert.equal(savedBoard.board.threadId, 12);
     assert.equal(
       database.data.diagnostics.telegramHousekeepingBoards["hotel-a"].messageId,
-      "77",
+      77,
     );
 
     const nextBoard = await getHousekeepingBoard(database, { tenantId: "hotel-a" });
 
-    assert.equal(nextBoard.board.messageId, "77");
+    assert.equal(nextBoard.board.messageId, 77);
+    assert.deepEqual(Object.keys(nextBoard.items[0]).sort(), [
+      "checkoutTimestamp",
+      "eventId",
+      "roomId",
+      "roomName",
+      "roomNumber",
+      "source",
+      "status",
+    ]);
+    assert.equal(nextBoard.items[0].roomId, firstRoom.id);
+    assert.equal(nextBoard.items[0].roomNumber, "109");
+    assert.equal(nextBoard.items[0].status, "ready_for_cleaning");
+    assert.equal(nextBoard.items[0].checkoutTimestamp, firstCheckout.event.timestamp);
     assert.deepEqual(
       nextBoard.items.map((item) => item.eventId),
       [firstCheckout.event.id],
@@ -442,7 +476,7 @@ test("Telegram housekeeping board keeps numeric message id across checkout refre
 
     const refreshedBoard = await getHousekeepingBoard(database, { tenantId: "hotel-a" });
 
-    assert.equal(refreshedBoard.board.messageId, "77");
+    assert.equal(refreshedBoard.board.messageId, 77);
     assert.deepEqual(
       refreshedBoard.items.map((item) => item.eventId).sort(),
       [firstCheckout.event.id, secondCheckout.event.id].sort(),

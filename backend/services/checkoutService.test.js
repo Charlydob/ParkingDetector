@@ -394,6 +394,37 @@ test("checkout webhook uses the correct tenant and chatId", async () => {
   });
 });
 
+test("checkout webhook includes the persisted housekeeping board reference", async () => {
+  const calls = [];
+  const database = createNotificationDatabase();
+  database.data.diagnostics.telegramHousekeepingBoards = {
+    hotelA: {
+      tenantId: "hotelA",
+      chatId: "chat-a",
+      messageId: 12345,
+      threadId: 12,
+      updatedAt: "2026-08-25T10:00:00.000Z",
+    },
+  };
+  const room = await createRoom(database, "hotelA", { number: "204" });
+
+  await withN8nCheckoutWebhook(async (...args) => {
+    calls.push(args);
+    return { ok: true, status: 200 };
+  }, async () => {
+    await registerCheckout(database, "hotelA", room.id, "manual");
+
+    assert.equal(calls.length, 1);
+    assert.deepEqual(parseWebhookCall(calls[0]).payload.notification.housekeepingBoard, {
+      tenantId: "hotelA",
+      chatId: "chat-a",
+      messageId: 12345,
+      threadId: 12,
+      updatedAt: "2026-08-25T10:00:00.000Z",
+    });
+  });
+});
+
 test("duplicate checkout does not send another n8n webhook", async () => {
   const calls = [];
   const database = createNotificationDatabase();

@@ -12,6 +12,46 @@ function cleanTelegramId(value) {
     : "";
 }
 
+function cleanTelegramIntegerId(value) {
+  if (value === undefined || value === null || value === "") {
+    return "";
+  }
+
+  if (typeof value === "number" && Number.isSafeInteger(value)) {
+    return value;
+  }
+
+  const raw = cleanTelegramId(value);
+  if (!raw) {
+    return "";
+  }
+
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && String(parsed) === raw ? parsed : raw;
+}
+
+export async function getSavedHousekeepingBoard(database, tenantId) {
+  if (!database || !tenantId) {
+    return {};
+  }
+
+  const stored = await database.getRecord("diagnostics", "telegramHousekeepingBoards");
+  const boards = stored?.value && typeof stored.value === "object" ? stored.value : stored || {};
+  const board = boards[tenantId];
+
+  if (!board || typeof board !== "object" || !board.messageId) {
+    return {};
+  }
+
+  return {
+    tenantId: cleanString(board.tenantId),
+    chatId: cleanTelegramId(board.chatId),
+    messageId: cleanTelegramIntegerId(board.messageId),
+    threadId: cleanTelegramIntegerId(board.threadId),
+    updatedAt: cleanString(board.updatedAt),
+  };
+}
+
 function publicDiagnostics(diagnostics = {}) {
   return {
     lastAttemptAt: cleanString(diagnostics.lastAttemptAt),
@@ -73,7 +113,14 @@ export function getPublicNotificationSettings(settings = {}) {
   };
 }
 
-export async function sendCheckoutNotification({ database, tenant, tenantSettings, room, event }) {
+export async function sendCheckoutNotification({
+  database,
+  tenant,
+  tenantSettings,
+  room,
+  event,
+  housekeepingBoard,
+}) {
   const telegram = tenantSettings?.notifications?.telegram || tenantSettings?.telegram || {};
   const tenantId = tenant?.id || event?.tenantId;
 
@@ -107,6 +154,10 @@ export async function sendCheckoutNotification({ database, tenant, tenantSetting
     return { sent: false, skipped: true, diagnostics };
   }
 
+  const savedHousekeepingBoard =
+    housekeepingBoard === undefined
+      ? await getSavedHousekeepingBoard(database, tenantId)
+      : housekeepingBoard;
   const payload = {
     event: "checkout.completed",
     tenant: {
@@ -126,6 +177,7 @@ export async function sendCheckoutNotification({ database, tenant, tenantSetting
     },
     notification: {
       chatId: cleanTelegramId(telegram.chatId),
+      housekeepingBoard: savedHousekeepingBoard,
     },
   };
 

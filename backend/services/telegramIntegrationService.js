@@ -27,6 +27,28 @@ function cleanTelegramId(value) {
     : "";
 }
 
+function cleanTelegramIntegerId(value) {
+  if (value === undefined || value === null || value === "") {
+    return "";
+  }
+
+  if (typeof value === "number" && Number.isSafeInteger(value)) {
+    return value;
+  }
+
+  const raw = cleanTelegramId(value);
+  if (!raw) {
+    return "";
+  }
+
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && String(parsed) === raw ? parsed : raw;
+}
+
+function firstPresent(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== "");
+}
+
 function publicTenant(tenant) {
   return {
     id: tenant.id,
@@ -120,6 +142,20 @@ function latestEventByRoom(events) {
   return byRoom;
 }
 
+function publicHousekeepingBoardRecord(record = {}) {
+  if (!record || typeof record !== "object" || !record.messageId) {
+    return {};
+  }
+
+  return {
+    tenantId: cleanString(record.tenantId),
+    chatId: cleanTelegramId(record.chatId),
+    messageId: cleanTelegramIntegerId(record.messageId),
+    threadId: cleanTelegramIntegerId(record.threadId),
+    updatedAt: cleanString(record.updatedAt),
+  };
+}
+
 async function requireTelegramTenant(database, input = {}) {
   const tenant = await resolveTenant(database, input);
 
@@ -172,7 +208,7 @@ export async function getHousekeepingBoard(database, input = {}) {
 
   return {
     tenant: publicTenant(tenant),
-    board: boards[tenant.id] || {},
+    board: publicHousekeepingBoardRecord(boards[tenant.id]),
     updatedAt: now(),
     items,
     summary: {
@@ -186,11 +222,36 @@ export async function getHousekeepingBoard(database, input = {}) {
 export async function saveHousekeepingBoardMessage(database, input = {}) {
   const tenant = await requireTelegramTenant(database, input);
   const boards = await getDiagnosticValue(database, BOARD_DIAGNOSTIC_KEY);
+  const messageId = cleanTelegramIntegerId(
+    firstPresent(input.messageId, input.message_id, input.message?.message_id, input.result?.message_id),
+  );
+
+  if (!messageId) {
+    const error = new Error("Telegram board messageId is required.");
+    error.statusCode = 400;
+    throw error;
+  }
+
   boards[tenant.id] = {
     tenantId: tenant.id,
-    chatId: cleanTelegramId(input.chatId),
-    messageId: cleanTelegramId(input.messageId),
-    threadId: cleanTelegramId(input.threadId),
+    chatId: cleanTelegramId(
+      firstPresent(
+        input.chatId,
+        input.chat_id,
+        input.chat?.id,
+        input.message?.chat?.id,
+        input.result?.chat?.id,
+      ),
+    ),
+    messageId,
+    threadId: cleanTelegramIntegerId(
+      firstPresent(
+        input.threadId,
+        input.message_thread_id,
+        input.message?.message_thread_id,
+        input.result?.message_thread_id,
+      ),
+    ),
     updatedAt: now(),
   };
   await saveDiagnosticValue(database, BOARD_DIAGNOSTIC_KEY, boards);

@@ -1,4 +1,7 @@
-import { sendCheckoutNotification } from "./notificationService.js";
+import {
+  getSavedHousekeepingBoard,
+  sendCheckoutNotification,
+} from "./notificationService.js";
 import { getTenantSettings } from "./tenantSettingsService.js";
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 
@@ -695,9 +698,10 @@ export async function registerCheckout(database, tenantId, roomId, source, optio
     return result;
   }
 
-  const [tenant, tenantSettings] = await Promise.all([
+  const [tenant, tenantSettings, housekeepingBoard] = await Promise.all([
     database.getRecord("tenants", tenantId),
     getTenantSettings(database, tenantId),
+    getSavedHousekeepingBoard(database, tenantId),
   ]);
   void sendCheckoutNotification({
     database,
@@ -705,6 +709,7 @@ export async function registerCheckout(database, tenantId, roomId, source, optio
     tenantSettings,
     room: result.room,
     event: result.event,
+    housekeepingBoard,
   });
 
   return {
