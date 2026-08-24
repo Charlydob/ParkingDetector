@@ -33,10 +33,14 @@ import {
   getPublicTenantSettings,
   updateTenantSettings,
 } from "./services/tenantSettingsService.js";
+import { sendTestCheckoutNotification } from "./services/notificationService.js";
 import {
   connectTelegramChat,
   createTelegramPairingCode,
   disconnectTelegramChat,
+  getHousekeepingBoard,
+  handleHousekeepingAction,
+  saveHousekeepingBoardMessage,
   validateTelegramIntegrationSecret,
 } from "./services/telegramIntegrationService.js";
 import {
@@ -452,6 +456,7 @@ const server = createServer(async (request, response) => {
       const result = await handlePublicCheckoutRoute({
         request,
         pathname,
+        body: request.method === "GET" ? {} : await readJsonBody(request),
         context: { database, publicCheckoutLimiter },
       });
 
@@ -519,6 +524,49 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (
+      request.method === "GET" &&
+      pathname === "/api/integrations/telegram/housekeeping-board"
+    ) {
+      if (!validateTelegramIntegrationSecret(request.headers)) {
+        sendJson(response, 401, { success: false, error: "Unauthorized." });
+        return;
+      }
+
+      sendJson(
+        response,
+        200,
+        await getHousekeepingBoard(database, {
+          tenantId: parsedUrl.searchParams.get("tenantId"),
+          tenantSlug: parsedUrl.searchParams.get("tenantSlug") || parsedUrl.searchParams.get("slug"),
+        }),
+      );
+      return;
+    }
+
+    if (
+      request.method === "POST" &&
+      pathname === "/api/integrations/telegram/housekeeping-board/message"
+    ) {
+      if (!validateTelegramIntegrationSecret(request.headers)) {
+        sendJson(response, 401, { success: false, error: "Unauthorized." });
+        return;
+      }
+
+      sendJson(response, 200, await saveHousekeepingBoardMessage(database, await readJsonBody(request)));
+      return;
+    }
+
+    if (request.method === "POST" && pathname === "/api/integrations/telegram/housekeeping-action") {
+      if (!validateTelegramIntegrationSecret(request.headers)) {
+        sendJson(response, 401, { success: false, error: "Unauthorized." });
+        return;
+      }
+
+      sendJson(response, 200, await handleHousekeepingAction(database, await readJsonBody(request)));
+      return;
+    }
+
     if (request.method === "POST" && pathname === "/api/integrations/telegram/pairing-code") {
       const context = await getProtectedContext(request);
       const tenantId = requireTenant(context.session);
@@ -533,6 +581,30 @@ const server = createServer(async (request, response) => {
       requireTenantAdmin(context.session, tenantId);
       await disconnectTelegramChat(database, tenantId);
       sendJson(response, 200, await getPublicTenantSettings(database, tenantId));
+      return;
+    }
+
+    if (request.method === "POST" && pathname === "/api/integrations/telegram/test") {
+      const context = await getProtectedContext(request);
+      const tenantId = requireTenant(context.session);
+      requireTenantAdmin(context.session, tenantId);
+      const [tenant, tenantSettings] = await Promise.all([
+        database.getRecord("tenants", tenantId),
+        getTenantSettings(database, tenantId),
+      ]);
+      const result = await sendTestCheckoutNotification({
+        database,
+        tenant,
+        tenantSettings,
+      });
+
+      sendJson(response, 200, {
+        success: Boolean(result.sent),
+        skipped: Boolean(result.skipped),
+        error: result.error || result.diagnostics?.lastError || "",
+        httpStatus: result.httpStatus,
+        diagnostics: result.diagnostics || {},
+      });
       return;
     }
 

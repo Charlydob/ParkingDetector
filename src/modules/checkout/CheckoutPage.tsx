@@ -1,8 +1,10 @@
-import { Download, KeyRound, Plus, QrCode, RefreshCw } from "lucide-react";
+import { Download, KeyRound, Plus, Printer, QrCode, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   createCheckoutKey,
+  createCheckoutKeysBulk,
   createRoom,
+  createRoomsBulk,
   getCheckoutKeys,
   getCheckoutOverview,
   manualCheckout,
@@ -11,11 +13,30 @@ import {
 } from "../../services/backendApi";
 import type { CheckoutEvent, CheckoutOverview, KeyIdentifier, Room, RoomStatus } from "../../types/checkout";
 
+const ALL_ROOMS = "__all__";
+
+type QrTextMode = "none" | "label" | "room" | "label-room";
+
+interface QrPreview {
+  label: string;
+  roomNumber?: string;
+  dataUrl: string;
+  checkoutUrl?: string;
+  filename: string;
+}
+
 const filters: Array<{ id: "all" | RoomStatus; label: string }> = [
   { id: "all", label: "All" },
   { id: "ready_for_cleaning", label: "Pending cleaning" },
   { id: "cleaning", label: "Cleaning" },
   { id: "ready", label: "Ready" },
+];
+
+const qrTextModes: Array<{ id: QrTextMode; label: string }> = [
+  { id: "none", label: "None" },
+  { id: "label", label: "Label only" },
+  { id: "room", label: "Room only" },
+  { id: "label-room", label: "Label + room" },
 ];
 
 function roomStatusLabel(status: RoomStatus) {
@@ -26,6 +47,94 @@ function formatTime(value?: string) {
   return value ? new Date(value).toLocaleString() : "-";
 }
 
+function slug(value: string) {
+  return value.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase();
+}
+
+function qrCaption(mode: QrTextMode, label: string, roomNumber?: string) {
+  const cleanLabel = label.trim();
+  const cleanRoom = roomNumber?.trim();
+
+  if (mode === "label" && cleanLabel) {
+    return cleanLabel;
+  }
+
+  if (mode === "room" && cleanRoom) {
+    return `Room ${cleanRoom}`;
+  }
+
+  if (mode === "label-room") {
+    return [cleanLabel, cleanRoom ? `Room ${cleanRoom}` : ""].filter(Boolean).join(" ");
+  }
+
+  return "";
+}
+
+function qrFilename(label: string, roomNumber?: string) {
+  const roomPart = roomNumber ? `room-${slug(roomNumber)}` : "checkout";
+  const labelPart = slug(label || "checkout");
+
+  return `${roomPart}-${labelPart}-qr.png`;
+}
+
+async function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Could not render QR image."));
+    image.src = src;
+  });
+}
+
+async function printableQrDataUrl({
+  qrDataUrl,
+  label,
+  roomNumber,
+  textMode,
+}: {
+  qrDataUrl: string;
+  label: string;
+  roomNumber?: string;
+  textMode: QrTextMode;
+}) {
+  const caption = qrCaption(textMode, label, roomNumber);
+
+  if (!caption) {
+    return qrDataUrl;
+  }
+
+  const qrImage = await loadImage(qrDataUrl);
+  const canvas = document.createElement("canvas");
+  const qrSize = 620;
+  const padding = 70;
+  const captionHeight = 110;
+  canvas.width = qrSize + padding * 2;
+  canvas.height = qrSize + padding * 2 + captionHeight;
+
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return qrDataUrl;
+  }
+
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(qrImage, padding, padding, qrSize, qrSize);
+  context.fillStyle = "#111827";
+  context.font = "700 44px Arial, sans-serif";
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+
+  const maxWidth = canvas.width - padding * 2;
+  let fontSize = 44;
+  while (context.measureText(caption).width > maxWidth && fontSize > 24) {
+    fontSize -= 2;
+    context.font = `700 ${fontSize}px Arial, sans-serif`;
+  }
+
+  context.fillText(caption, canvas.width / 2, qrSize + padding + captionHeight / 2);
+  return canvas.toDataURL("image/png");
+}
+
 export function CheckoutPage() {
   const [overview, setOverview] = useState<CheckoutOverview>();
   const [keys, setKeys] = useState<KeyIdentifier[]>([]);
@@ -33,9 +142,14 @@ export function CheckoutPage() {
   const [tab, setTab] = useState<"board" | "settings">("board");
   const [roomNumber, setRoomNumber] = useState("");
   const [roomName, setRoomName] = useState("");
+  const [bulkRoomNumbers, setBulkRoomNumbers] = useState("");
+  const [createQrForBulkRooms, setCreateQrForBulkRooms] = useState(true);
   const [selectedRoomId, setSelectedRoomId] = useState("");
   const [keyLabel, setKeyLabel] = useState("");
-  const [qrPreview, setQrPreview] = useState<{ label: string; dataUrl: string; checkoutUrl?: string }>();
+  const [regenerateExisting, setRegenerateExisting] = useState(false);
+  const [qrTextMode, setQrTextMode] = useState<QrTextMode>("none");
+  const [qrPreview, setQrPreview] = useState<QrPreview>();
+  const [qrGallery, setQrGallery] = useState<QrPreview[]>([]);
   const [notice, setNotice] = useState("");
 
   async function reload() {
@@ -51,11 +165,34 @@ export function CheckoutPage() {
     );
   }, []);
 
-  const rooms = useMemo(
-    () =>
-      (overview?.rooms || []).filter((room) => filter === "all" || room.status === filter),
-    [filter, overview?.rooms],
+  const activeRooms = useMemo(
+    () => (overview?.rooms || []).filter((room) => room.active !== false),
+    [overview?.rooms],
   );
+  const rooms = useMemo(
+    () => activeRooms.filter((room) => filter === "all" || room.status === filter),
+    [activeRooms, filter],
+  );
+
+  async function previewForKey(
+    key: KeyIdentifier & { qrDataUrl: string; checkoutUrl?: string },
+    room?: Room,
+  ): Promise<QrPreview> {
+    const dataUrl = await printableQrDataUrl({
+      qrDataUrl: key.qrDataUrl,
+      label: key.label,
+      roomNumber: room?.number,
+      textMode: qrTextMode,
+    });
+
+    return {
+      label: key.label,
+      roomNumber: room?.number,
+      dataUrl,
+      checkoutUrl: key.checkoutUrl,
+      filename: qrFilename(key.label, room?.number),
+    };
+  }
 
   async function addRoom() {
     const room = await createRoom({ number: roomNumber, name: roomName, status: "unknown" });
@@ -63,6 +200,28 @@ export function CheckoutPage() {
     setRoomName("");
     setSelectedRoomId(room.id);
     setNotice("Room created.");
+    await reload();
+  }
+
+  async function addRoomsBulk() {
+    const result = await createRoomsBulk({
+      numbers: bulkRoomNumbers,
+      createQr: createQrForBulkRooms,
+      keyLabel,
+    });
+    const createdRoomsById = new Map(result.created.map((room) => [room.id, room]));
+    const gallery = await Promise.all(
+      result.keys.map((key) => previewForKey(key, createdRoomsById.get(key.roomId))),
+    );
+
+    setBulkRoomNumbers("");
+    setQrGallery(gallery);
+    setQrPreview(gallery[0]);
+    setNotice(
+      `Created ${result.summary.created} rooms. Skipped ${result.summary.skippedExisting} existing${
+        result.duplicateInput.length ? ` and ${result.duplicateInput.length} duplicate inputs` : ""
+      }.`,
+    );
     await reload();
   }
 
@@ -77,16 +236,38 @@ export function CheckoutPage() {
   }
 
   async function createKey() {
+    if (selectedRoomId === ALL_ROOMS) {
+      const result = await createCheckoutKeysBulk({ label: keyLabel, regenerateExisting });
+      const roomsById = new Map(activeRooms.map((room) => [room.id, room]));
+      const gallery = await Promise.all(
+        result.keys.map((key) => previewForKey(key, roomsById.get(key.roomId))),
+      );
+
+      setQrGallery(gallery);
+      setQrPreview(gallery[0]);
+      setNotice(
+        `Generated ${result.summary.created} new QR keys, regenerated ${result.summary.regenerated}, skipped ${result.summary.skippedExisting} existing.`,
+      );
+      await reload();
+      return;
+    }
+
     const key = await createCheckoutKey({ roomId: selectedRoomId, label: keyLabel });
+    const room = activeRooms.find((item) => item.id === selectedRoomId);
+    const preview = await previewForKey(key, room);
     setKeyLabel("");
-    setQrPreview({ label: key.label, dataUrl: key.qrDataUrl, checkoutUrl: key.checkoutUrl });
+    setQrGallery([preview]);
+    setQrPreview(preview);
     setNotice("QR key created.");
     await reload();
   }
 
   async function regenerate(key: KeyIdentifier) {
     const next = await updateCheckoutKey(key.id, { regenerate: true });
-    setQrPreview({ label: next.label, dataUrl: next.qrDataUrl, checkoutUrl: next.checkoutUrl });
+    const room = activeRooms.find((item) => item.id === next.roomId);
+    const preview = await previewForKey(next, room);
+    setQrGallery([preview]);
+    setQrPreview(preview);
     setNotice("QR token regenerated.");
     await reload();
   }
@@ -102,15 +283,46 @@ export function CheckoutPage() {
     await reload();
   }
 
-  function downloadQr() {
-    if (!qrPreview) {
+  function downloadQr(item = qrPreview) {
+    if (!item) {
       return;
     }
 
     const link = document.createElement("a");
-    link.href = qrPreview.dataUrl;
-    link.download = `${qrPreview.label.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-checkout-qr.png`;
+    link.href = item.dataUrl;
+    link.download = item.filename;
     link.click();
+  }
+
+  function printGallery() {
+    if (qrGallery.length === 0) {
+      return;
+    }
+
+    const popup = window.open("", "_blank", "noopener,noreferrer");
+    if (!popup) {
+      setNotice("Could not open print sheet.");
+      return;
+    }
+
+    popup.document.write(`<!doctype html><html><head><title>Checkout QR set</title>
+      <style>
+        body { font-family: Arial, sans-serif; margin: 24px; }
+        .grid { display: grid; gap: 24px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+        .item { break-inside: avoid; text-align: center; }
+        img { max-width: 220px; width: 100%; }
+        strong { display: block; margin-top: 8px; }
+      </style></head><body><div class="grid">
+      ${qrGallery
+        .map(
+          (item) =>
+            `<div class="item"><img src="${item.dataUrl}" alt=""><strong>Room ${
+              item.roomNumber || "-"
+            } - ${item.label}</strong></div>`,
+        )
+        .join("")}
+      </div><script>window.onload = () => window.print();</script></body></html>`);
+    popup.document.close();
   }
 
   return (
@@ -212,8 +424,29 @@ export function CheckoutPage() {
                 <Plus size={15} />
                 Create room
               </button>
+              <label>
+                <span>Bulk room numbers</span>
+                <textarea
+                  value={bulkRoomNumbers}
+                  onChange={(event) => setBulkRoomNumbers(event.target.value)}
+                  placeholder={"101, 102, 103\n104\n105"}
+                  rows={5}
+                />
+              </label>
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={createQrForBulkRooms}
+                  onChange={(event) => setCreateQrForBulkRooms(event.target.checked)}
+                />
+                <span>Create QR for each room</span>
+              </label>
+              <button type="button" onClick={addRoomsBulk} disabled={!bulkRoomNumbers.trim()}>
+                <Plus size={15} />
+                Create rooms in bulk
+              </button>
               <div className="settings-table">
-                {(overview?.rooms || []).map((room) => (
+                {activeRooms.map((room) => (
                   <div key={room.id}>
                     <strong>Room {room.number}</strong>
                     <span>{room.name || "-"}</span>
@@ -236,7 +469,8 @@ export function CheckoutPage() {
                 <label>
                   <span>Room</span>
                   <select value={selectedRoomId} onChange={(event) => setSelectedRoomId(event.target.value)}>
-                    {(overview?.rooms || []).map((room) => (
+                    <option value={ALL_ROOMS}>All rooms</option>
+                    {activeRooms.map((room) => (
                       <option key={room.id} value={room.id}>
                         Room {room.number}
                       </option>
@@ -248,13 +482,35 @@ export function CheckoutPage() {
                   <input value={keyLabel} onChange={(event) => setKeyLabel(event.target.value)} />
                 </label>
               </div>
-              <button type="button" onClick={createKey} disabled={!selectedRoomId}>
+              <div className="settings-split">
+                <label>
+                  <span>QR text</span>
+                  <select value={qrTextMode} onChange={(event) => setQrTextMode(event.target.value as QrTextMode)}>
+                    {qrTextModes.map((mode) => (
+                      <option key={mode.id} value={mode.id}>
+                        {mode.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {selectedRoomId === ALL_ROOMS && (
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={regenerateExisting}
+                      onChange={(event) => setRegenerateExisting(event.target.checked)}
+                    />
+                    <span>Regenerate existing QR keys</span>
+                  </label>
+                )}
+              </div>
+              <button type="button" onClick={createKey} disabled={!selectedRoomId || activeRooms.length === 0}>
                 <KeyRound size={15} />
-                Create QR key
+                {selectedRoomId === ALL_ROOMS ? "Generate QR set" : "Create QR key"}
               </button>
               <div className="settings-table">
                 {keys.map((key) => {
-                  const room = overview?.rooms.find((item) => item.id === key.roomId);
+                  const room = activeRooms.find((item) => item.id === key.roomId);
                   return (
                     <div key={key.id}>
                       <strong>{key.label}</strong>
@@ -304,10 +560,33 @@ export function CheckoutPage() {
                       <input readOnly value={qrPreview.checkoutUrl} />
                     </label>
                   )}
-                  <button type="button" onClick={downloadQr}>
-                    <Download size={15} />
-                    Download PNG
-                  </button>
+                  <div className="button-row">
+                    <button type="button" onClick={() => downloadQr()}>
+                      <Download size={15} />
+                      Download PNG
+                    </button>
+                    {qrGallery.length > 1 && (
+                      <button type="button" onClick={printGallery}>
+                        <Printer size={15} />
+                        Print all
+                      </button>
+                    )}
+                  </div>
+                  {qrGallery.length > 1 && (
+                    <div className="qr-gallery">
+                      {qrGallery.map((item) => (
+                        <div key={item.filename}>
+                          <img src={item.dataUrl} alt={`${item.label} room ${item.roomNumber || ""} QR`} />
+                          <strong>Room {item.roomNumber || "-"}</strong>
+                          <span>{item.label}</span>
+                          <button type="button" onClick={() => downloadQr(item)}>
+                            <Download size={14} />
+                            Download
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </>
               ) : (
                 <p className="empty-state">Create or regenerate a key to preview its printable QR.</p>

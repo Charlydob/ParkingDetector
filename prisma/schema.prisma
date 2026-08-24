@@ -50,6 +50,7 @@ model Tenant {
   keyIdentifiers KeyIdentifier[]
   memberships    Membership[]
   modules        TenantModule[]
+  occupancyCycles OccupancyCycle[]
   rooms          Room[]
   settings       TenantSettings?
 
@@ -112,6 +113,7 @@ model Room {
   updatedAt      DateTime         @updatedAt @map("updated_at")
   checkoutEvents CheckoutEvent[]
   keys           KeyIdentifier[]
+  occupancyCycles OccupancyCycle[]
   tenant         Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, number])
@@ -140,6 +142,7 @@ model CheckoutEvent {
   id               String   @id @default(uuid()) @db.Uuid
   tenantId         String   @map("tenant_id") @db.Uuid
   roomId           String   @map("room_id") @db.Uuid
+  occupancyCycleId String?  @unique @map("occupancy_cycle_id") @db.Uuid
   source           String
   sourceIdentifier String?  @map("source_identifier")
   status           String
@@ -147,10 +150,33 @@ model CheckoutEvent {
   timestamp        DateTime @default(now())
   tenant           Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   room             Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  occupancyCycle   OccupancyCycle? @relation(fields: [occupancyCycleId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, timestamp])
   @@index([tenantId, roomId])
   @@map("checkout_events")
+}
+
+model OccupancyCycle {
+  id              String         @id @default(uuid()) @db.Uuid
+  tenantId        String         @map("tenant_id") @db.Uuid
+  roomId          String         @map("room_id") @db.Uuid
+  cycleNumber     Int            @map("cycle_number")
+  openedAt        DateTime       @default(now()) @map("opened_at")
+  createdReason   String         @default("ready") @map("created_reason")
+  consumedAt      DateTime?      @map("consumed_at")
+  reservationCode String?        @map("reservation_code")
+  guestName       String?        @map("guest_name")
+  guestEmail      String?        @map("guest_email")
+  departureAt     DateTime?      @map("departure_at")
+  metadata        Json           @default("{}")
+  tenant          Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  room            Room           @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  checkoutEvent   CheckoutEvent?
+
+  @@unique([tenantId, roomId, cycleNumber])
+  @@index([tenantId, roomId, consumedAt])
+  @@map("occupancy_cycles")
 }
 
 model Invitation {

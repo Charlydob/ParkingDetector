@@ -1,14 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { createEventProcessor } from "../eventProcessor.js";
 import {
   createKeyIdentifier,
+  createKeyIdentifiersBulk,
   createRoom,
+  createRoomsBulk,
   checkoutIdentifierFromValue,
+  createCheckoutAttemptToken,
+  ensureRoomOccupiedCycle,
   listCheckoutOverview,
   registerCheckout,
   registerCheckoutByIdentifier,
   resolveCheckoutByIdentifier,
   updateKeyIdentifier,
+  updateRoom,
 } from "./checkoutService.js";
 import { requireModule } from "./tenantService.js";
 
@@ -19,9 +26,159 @@ function createFakeDatabase(initial = {}) {
     rooms: {},
     keyIdentifiers: {},
     checkoutEvents: {},
+    occupancyCycles: {},
+    checkIns: {},
+    detections: {},
+    diagnostics: {},
     tenantSettings: {},
     ...initial,
   };
+  const roomQueues = new Map();
+
+  async function getTenantRecord(collection, tenantId, id) {
+    const record = data[collection][id];
+    return record?.tenantId === tenantId ? record : undefined;
+  }
+
+  async function listTenantRecords(collection, tenantId) {
+    return Object.values(data[collection]).filter((record) => record.tenantId === tenantId);
+  }
+
+  async function ensureCurrentOccupancyCycle({
+    tenantId,
+    roomId,
+    reason = "ready",
+    metadata = {},
+    reservationCode,
+    guestName,
+    guestEmail,
+    departureAt,
+  }) {
+    const current = Object.values(data.occupancyCycles).find(
+      (cycle) => cycle.tenantId === tenantId && cycle.roomId === roomId && !cycle.consumedAt,
+    );
+
+    if (current) {
+      Object.assign(current, {
+        reservationCode:
+          reservationCode === undefined ? current.reservationCode : String(reservationCode || ""),
+        guestName: guestName === undefined ? current.guestName : String(guestName || ""),
+        guestEmail: guestEmail === undefined ? current.guestEmail : String(guestEmail || ""),
+        departureAt: departureAt === undefined ? current.departureAt : departureAt,
+        metadata: {
+          ...(current.metadata || {}),
+          ...(metadata || {}),
+        },
+      });
+      return { cycle: current, created: false };
+    }
+
+    const cycleNumber =
+      Object.values(data.occupancyCycles)
+        .filter((cycle) => cycle.tenantId === tenantId && cycle.roomId === roomId)
+        .reduce((highest, cycle) => Math.max(highest, Number(cycle.cycleNumber || 0)), 0) + 1;
+    const cycle = {
+      id: `cycle-${randomUUID()}`,
+      tenantId,
+      roomId,
+      cycleNumber,
+      openedAt: new Date().toISOString(),
+      createdReason: reason,
+      consumedAt: null,
+      reservationCode: String(reservationCode || ""),
+      guestName: String(guestName || ""),
+      guestEmail: String(guestEmail || ""),
+      departureAt: departureAt || null,
+      metadata: metadata || {},
+    };
+    data.occupancyCycles[cycle.id] = cycle;
+    return { cycle, created: true };
+  }
+
+  async function registerCheckoutForCurrentCycle(input) {
+    const queueKey = `${input.tenantId}:${input.roomId}`;
+    const previous = roomQueues.get(queueKey) || Promise.resolve();
+    const next = previous.then(async () => {
+      const room = await getTenantRecord("rooms", input.tenantId, input.roomId);
+
+      if (!room || room.active === false) {
+        const error = new Error("Room not found.");
+        error.statusCode = 404;
+        throw error;
+      }
+
+      const current = Object.values(data.occupancyCycles).find(
+        (cycle) =>
+          cycle.tenantId === input.tenantId && cycle.roomId === input.roomId && !cycle.consumedAt,
+      );
+
+      if (current && input.occupancyCycleId && current.id !== input.occupancyCycleId) {
+        const error = new Error("This checkout page is no longer valid.");
+        error.statusCode = 409;
+        error.code = "STALE_CHECKOUT_ATTEMPT";
+        throw error;
+      }
+
+      if (!current && input.occupancyCycleId) {
+        const duplicateEvent = Object.values(data.checkoutEvents).find(
+          (event) => event.occupancyCycleId === input.occupancyCycleId,
+        );
+        const cycle = data.occupancyCycles[input.occupancyCycleId];
+
+        if (cycle?.consumedAt && duplicateEvent) {
+          return { duplicate: true, event: duplicateEvent, room };
+        }
+
+        const error = new Error("This checkout page is no longer valid.");
+        error.statusCode = 409;
+        error.code = "STALE_CHECKOUT_ATTEMPT";
+        throw error;
+      }
+
+      const cycle =
+        current ||
+        (
+          await ensureCurrentOccupancyCycle({
+            tenantId: input.tenantId,
+            roomId: input.roomId,
+            reason: "checkout_recovery",
+          })
+        ).cycle;
+      const duplicateEvent = Object.values(data.checkoutEvents).find(
+        (event) => event.occupancyCycleId === cycle.id,
+      );
+
+      if (duplicateEvent) {
+        return { duplicate: true, event: duplicateEvent, room };
+      }
+
+      const timestamp = new Date().toISOString();
+      const event = {
+        id: input.id || randomUUID(),
+        tenantId: input.tenantId,
+        roomId: input.roomId,
+        occupancyCycleId: cycle.id,
+        source: input.source,
+        sourceIdentifier: input.sourceIdentifier,
+        status: "registered",
+        timestamp,
+        metadata: input.metadata || {},
+      };
+      const updatedRoom = {
+        ...room,
+        status: "ready_for_cleaning",
+        lastCheckoutAt: timestamp,
+        lastCheckoutSource: input.source,
+        updatedAt: timestamp,
+      };
+      data.checkoutEvents[event.id] = event;
+      data.occupancyCycles[cycle.id] = { ...cycle, consumedAt: timestamp };
+      data.rooms[room.id] = updatedRoom;
+      return { duplicate: false, event, room: updatedRoom };
+    });
+    roomQueues.set(queueKey, next.catch(() => undefined));
+    return next;
+  }
 
   return {
     data,
@@ -35,13 +192,8 @@ function createFakeDatabase(initial = {}) {
     async listRecords(collection) {
       return Object.values(data[collection]);
     },
-    async listTenantRecords(collection, tenantId) {
-      return Object.values(data[collection]).filter((record) => record.tenantId === tenantId);
-    },
-    async getTenantRecord(collection, tenantId, id) {
-      const record = data[collection][id];
-      return record?.tenantId === tenantId ? record : undefined;
-    },
+    listTenantRecords,
+    getTenantRecord,
     async getTenantModules(tenantId) {
       return Object.fromEntries(
         Object.values(data.tenantModules[tenantId] || {}).map((module) => [
@@ -55,6 +207,33 @@ function createFakeDatabase(initial = {}) {
       data.tenantModules[tenantId][moduleId] = { tenantId, moduleId, enabled };
       return data.tenantModules[tenantId][moduleId];
     },
+    async createCheckIn(checkIn) {
+      const id = checkIn.id || randomUUID();
+      data.checkIns[id] = { ...checkIn, id };
+      return data.checkIns[id];
+    },
+    async getCheckIns() {
+      return Object.values(data.checkIns);
+    },
+    async updateStripeDiagnostic(diagnostic) {
+      data.diagnostics.stripe = {
+        key: "stripe",
+        value: {
+          ...(data.diagnostics.stripe?.value || {}),
+          ...diagnostic,
+        },
+      };
+      return data.diagnostics.stripe;
+    },
+    async getDetections() {
+      return Object.values(data.detections);
+    },
+    async updateDetection(id, patch) {
+      data.detections[id] = { ...data.detections[id], ...patch };
+      return data.detections[id];
+    },
+    ensureCurrentOccupancyCycle,
+    registerCheckoutForCurrentCycle,
   };
 }
 
@@ -88,6 +267,9 @@ function createNotificationDatabase({ tenantId = "hotelA", enabled = true, chatI
   return createFakeDatabase({
     tenants: {
       [tenantId]: { id: tenantId, name: "Hotel A", slug: "hotel-a", active: true },
+    },
+    tenantModules: {
+      [tenantId]: { checkout: { moduleId: "checkout", enabled: true } },
     },
     tenantSettings: {
       [tenantId]: {
@@ -135,7 +317,10 @@ test("QR checkout sends n8n webhook", async () => {
     calls.push(args);
     return { ok: true, status: 200 };
   }, async () => {
-    const result = await registerCheckoutByIdentifier(database, key.identifier, "qr");
+    const target = await resolveCheckoutByIdentifier(database, key.identifier, "qr");
+    const result = await registerCheckoutByIdentifier(database, key.identifier, "qr", {
+      attemptToken: target.attemptToken,
+    });
 
     assert.equal(result.duplicate, false);
     assert.equal(calls.length, 1);
@@ -214,8 +399,13 @@ test("duplicate checkout does not send another n8n webhook", async () => {
     calls.push(args);
     return { ok: true, status: 200 };
   }, async () => {
-    const first = await registerCheckoutByIdentifier(database, key.identifier, "qr");
-    const second = await registerCheckoutByIdentifier(database, key.identifier, "qr");
+    const target = await resolveCheckoutByIdentifier(database, key.identifier, "qr");
+    const first = await registerCheckoutByIdentifier(database, key.identifier, "qr", {
+      attemptToken: target.attemptToken,
+    });
+    const second = await registerCheckoutByIdentifier(database, key.identifier, "qr", {
+      attemptToken: target.attemptToken,
+    });
 
     assert.equal(first.duplicate, false);
     assert.equal(second.duplicate, true);
@@ -244,6 +434,27 @@ test("n8n webhook failure does not break checkout registration", async () => {
   } finally {
     console.warn = originalWarn;
   }
+});
+
+test("n8n webhook failure stores tenant Telegram diagnostics", async () => {
+  const database = createNotificationDatabase();
+  const room = await createRoom(database, "hotelA", { number: "109" });
+
+  await withN8nCheckoutWebhook(async () => {
+    return { ok: false, status: 503 };
+  }, async () => {
+    const result = await registerCheckout(database, "hotelA", room.id, "manual");
+    await new Promise((resolve) => setImmediate(resolve));
+    const diagnostics =
+      database.data.tenantSettings.hotelA.notifications.telegram.diagnostics;
+
+    assert.equal(result.duplicate, false);
+    assert.equal(diagnostics.httpStatus, 503);
+    assert.equal(diagnostics.lastError, "n8n HTTP 503");
+    assert.equal(diagnostics.checkoutEventId, result.event.id);
+    assert.equal(diagnostics.room, "109");
+    assert.equal(diagnostics.source, "manual");
+  });
 });
 
 test("disabled Telegram notifications do not call n8n webhook", async () => {
@@ -303,19 +514,360 @@ test("tenant-scoped room listing never returns another tenant room", async () =>
   );
 });
 
-test("QR identifier resolves room, updates room state and is idempotent", async () => {
+test("bulk room creation trims, deduplicates, skips existing rooms, and creates QR keys", async () => {
   const database = createFakeDatabase();
+  await createRoom(database, "hotelA", { number: "102" });
+
+  const result = await createRoomsBulk(database, "hotelA", {
+    numbers: "101, 102,\n103\n101\n  ",
+    createQr: true,
+    keyLabel: "Checkout",
+  });
+
+  assert.deepEqual(
+    result.created.map((room) => room.number),
+    ["101", "103"],
+  );
+  assert.deepEqual(
+    result.skippedExisting.map((room) => room.number),
+    ["102"],
+  );
+  assert.deepEqual(result.duplicateInput, ["101"]);
+  assert.equal(result.keys.length, 2);
+  assert.equal(result.keys.every((key) => key.label === "Checkout"), true);
+});
+
+test("bulk room creation can skip QR creation", async () => {
+  const database = createFakeDatabase();
+  const result = await createRoomsBulk(database, "hotelA", {
+    numbers: "201\n202",
+    createQr: false,
+  });
+
+  assert.equal(result.created.length, 2);
+  assert.equal(result.keys.length, 0);
+  assert.equal(Object.values(database.data.keyIdentifiers).length, 0);
+});
+
+test("bulk QR generation skips existing active keys by default", async () => {
+  const database = createFakeDatabase();
+  const room101 = await createRoom(database, "hotelA", { number: "101" });
+  await createRoom(database, "hotelA", { number: "102" });
+  await createKeyIdentifier(database, "hotelA", { roomId: room101.id, label: "Existing" });
+
+  const result = await createKeyIdentifiersBulk(database, "hotelA", {
+    label: "Checkout",
+  });
+
+  assert.equal(result.summary.created, 1);
+  assert.equal(result.summary.skippedExisting, 1);
+  assert.equal(result.skippedExisting[0].roomNumber, "101");
+  assert.equal(Object.values(database.data.keyIdentifiers).filter((key) => key.active).length, 2);
+});
+
+test("bulk QR generation regenerates existing keys only when explicitly requested", async () => {
+  const database = createFakeDatabase();
+  const room = await createRoom(database, "hotelA", { number: "101" });
+  const key = await createKeyIdentifier(database, "hotelA", { roomId: room.id, label: "Old" });
+
+  const result = await createKeyIdentifiersBulk(database, "hotelA", {
+    label: "Checkout",
+    regenerateExisting: true,
+  });
+
+  assert.equal(result.summary.created, 0);
+  assert.equal(result.summary.regenerated, 1);
+  assert.notEqual(result.regenerated[0].identifier, key.identifier);
+  assert.equal(result.regenerated[0].label, "Checkout");
+  assert.equal(Object.values(database.data.keyIdentifiers).filter((item) => item.active).length, 1);
+});
+
+test("QR identifier resolves room, updates room state and is idempotent", async () => {
+  const database = createFakeDatabase({
+    tenants: {
+      hotelA: { id: "hotelA", name: "Hotel A", slug: "hotel-a", active: true },
+    },
+    tenantModules: {
+      hotelA: { checkout: { moduleId: "checkout", enabled: true } },
+    },
+  });
   const room = await createRoom(database, "hotelA", { number: "109" });
   const key = await createKeyIdentifier(database, "hotelA", { roomId: room.id });
 
-  const first = await registerCheckoutByIdentifier(database, key.identifier, "qr");
-  const second = await registerCheckoutByIdentifier(database, key.identifier, "qr");
+  const target = await resolveCheckoutByIdentifier(database, key.identifier, "qr");
+  const first = await registerCheckoutByIdentifier(database, key.identifier, "qr", {
+    attemptToken: target.attemptToken,
+  });
+  const second = await registerCheckoutByIdentifier(database, key.identifier, "qr", {
+    attemptToken: target.attemptToken,
+  });
   const updatedRoom = await database.getTenantRecord("rooms", "hotelA", room.id);
 
   assert.equal(first.duplicate, false);
   assert.equal(second.duplicate, true);
   assert.equal(updatedRoom.status, "ready_for_cleaning");
   assert.equal(Object.values(database.data.checkoutEvents).length, 1);
+});
+
+function cyclesForRoom(database, roomId) {
+  return Object.values(database.data.occupancyCycles)
+    .filter((cycle) => cycle.roomId === roomId)
+    .sort((left, right) => Number(left.cycleNumber) - Number(right.cycleNumber));
+}
+
+function currentCycleForRoom(database, roomId) {
+  return cyclesForRoom(database, roomId).find((cycle) => !cycle.consumedAt);
+}
+
+async function checkoutWithResolvedQr(database, key) {
+  const target = await resolveCheckoutByIdentifier(database, key.identifier, "qr");
+  const result = await registerCheckoutByIdentifier(database, key.identifier, "qr", {
+    attemptToken: target.attemptToken,
+  });
+  return { target, result };
+}
+
+test("static QR checkout follows the ready-created occupancy cycle lifecycle", async () => {
+  const database = createFakeDatabase({
+    tenants: {
+      hotelA: { id: "hotelA", name: "Hotel A", slug: "hotel-a", active: true },
+    },
+    tenantModules: {
+      hotelA: { checkout: { moduleId: "checkout", enabled: true } },
+    },
+  });
+  const room = await createRoom(database, "hotelA", { number: "109", status: "occupied" });
+  const key = await createKeyIdentifier(database, "hotelA", { roomId: room.id });
+
+  assert.equal(cyclesForRoom(database, room.id).length, 1);
+  assert.equal(currentCycleForRoom(database, room.id).cycleNumber, 1);
+
+  const first = await checkoutWithResolvedQr(database, key);
+
+  assert.equal(first.result.duplicate, false);
+  assert.equal(cyclesForRoom(database, room.id)[0].consumedAt, first.result.event.timestamp);
+
+  await updateRoom(database, "hotelA", room.id, { status: "cleaning" });
+  await updateRoom(database, "hotelA", room.id, { status: "ready" });
+
+  assert.equal(cyclesForRoom(database, room.id).length, 2);
+  assert.equal(currentCycleForRoom(database, room.id).cycleNumber, 2);
+
+  await updateRoom(database, "hotelA", room.id, { status: "ready" });
+
+  assert.equal(cyclesForRoom(database, room.id).length, 2);
+
+  await ensureRoomOccupiedCycle(database, "hotelA", room.id, {
+    reservationCode: "RES-2",
+    guestName: "Ada Lovelace",
+    guestEmail: "ada@example.test",
+    metadata: { source: "stripe" },
+  });
+
+  assert.equal(cyclesForRoom(database, room.id).length, 2);
+  assert.equal(currentCycleForRoom(database, room.id).reservationCode, "RES-2");
+
+  await updateRoom(database, "hotelA", room.id, { status: "occupied" });
+
+  assert.equal(cyclesForRoom(database, room.id).length, 2);
+
+  const second = await checkoutWithResolvedQr(database, key);
+  const lastCheckoutAt = second.result.room.lastCheckoutAt;
+  const duplicate = await registerCheckoutByIdentifier(database, key.identifier, "qr", {
+    attemptToken: second.target.attemptToken,
+  });
+
+  assert.equal(second.result.duplicate, false);
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(Object.values(database.data.checkoutEvents).length, 2);
+  assert.equal(database.data.rooms[room.id].lastCheckoutAt, lastCheckoutAt);
+
+  await updateRoom(database, "hotelA", room.id, { status: "cleaning" });
+  await updateRoom(database, "hotelA", room.id, { status: "ready" });
+
+  assert.equal(cyclesForRoom(database, room.id).length, 3);
+  assert.equal(currentCycleForRoom(database, room.id).cycleNumber, 3);
+
+  const third = await checkoutWithResolvedQr(database, key);
+
+  assert.equal(third.result.duplicate, false);
+  assert.equal(Object.values(database.data.checkoutEvents).length, 3);
+});
+
+test("Stripe check-in after Ready reuses the current cycle", async () => {
+  const database = createFakeDatabase({
+    rooms: {},
+  });
+  const room = await createRoom(database, "hotelA", { number: "109", status: "ready" });
+  const readyCycle = currentCycleForRoom(database, room.id);
+  const processor = createEventProcessor({
+    database,
+    frigateClient: {},
+    fileStorage: {},
+    processedEvents: {},
+    plateCooldown: {},
+    tenantId: "hotelA",
+  });
+
+  const checkIn = await processor.processCheckInEvent({
+    tenantId: "hotelA",
+    reservationCode: "STRIPE-2",
+    fullName: "Ada Lovelace",
+    email: "ada@example.test",
+    room: "109",
+    checkInAt: new Date().toISOString(),
+    source: "stripe",
+    stripeEventId: "evt_2",
+  });
+
+  assert.equal(checkIn.reservationCode, "STRIPE-2");
+  assert.equal(cyclesForRoom(database, room.id).length, 1);
+  assert.equal(currentCycleForRoom(database, room.id).id, readyCycle.id);
+  assert.equal(currentCycleForRoom(database, room.id).reservationCode, "STRIPE-2");
+  assert.equal(database.data.rooms[room.id].status, "occupied");
+});
+
+test("stale old-cycle checkout page is rejected after Ready opens the next cycle", async () => {
+  const database = createFakeDatabase({
+    tenants: {
+      hotelA: { id: "hotelA", name: "Hotel A", slug: "hotel-a", active: true },
+    },
+    tenantModules: {
+      hotelA: { checkout: { moduleId: "checkout", enabled: true } },
+    },
+  });
+  const room = await createRoom(database, "hotelA", { number: "109", status: "occupied" });
+  const key = await createKeyIdentifier(database, "hotelA", { roomId: room.id });
+  const oldPage = await resolveCheckoutByIdentifier(database, key.identifier, "qr");
+
+  await registerCheckoutByIdentifier(database, key.identifier, "qr", {
+    attemptToken: oldPage.attemptToken,
+  });
+  await updateRoom(database, "hotelA", room.id, { status: "ready" });
+
+  await assert.rejects(
+    () =>
+      registerCheckoutByIdentifier(database, key.identifier, "qr", {
+        attemptToken: oldPage.attemptToken,
+      }),
+    (error) => {
+      assert.equal(error.statusCode, 409);
+      assert.equal(error.code, "STALE_CHECKOUT_ATTEMPT");
+      return true;
+    },
+  );
+  assert.equal(Object.values(database.data.checkoutEvents).length, 1);
+});
+
+test("direct public checkout API replay without attempt token is rejected", async () => {
+  const database = createFakeDatabase({
+    tenants: {
+      hotelA: { id: "hotelA", name: "Hotel A", slug: "hotel-a", active: true },
+    },
+    tenantModules: {
+      hotelA: { checkout: { moduleId: "checkout", enabled: true } },
+    },
+  });
+  const room = await createRoom(database, "hotelA", { number: "109", status: "occupied" });
+  const key = await createKeyIdentifier(database, "hotelA", { roomId: room.id });
+
+  await assert.rejects(
+    () => registerCheckoutByIdentifier(database, key.identifier, "qr"),
+    (error) => {
+      assert.equal(error.statusCode, 401);
+      assert.equal(error.code, "CHECKOUT_ATTEMPT_INVALID");
+      return true;
+    },
+  );
+  assert.equal(Object.values(database.data.checkoutEvents).length, 0);
+});
+
+test("expired checkout attempt token is rejected", async () => {
+  const database = createFakeDatabase({
+    tenants: {
+      hotelA: { id: "hotelA", name: "Hotel A", slug: "hotel-a", active: true },
+    },
+    tenantModules: {
+      hotelA: { checkout: { moduleId: "checkout", enabled: true } },
+    },
+  });
+  const room = await createRoom(database, "hotelA", { number: "109", status: "occupied" });
+  const key = await createKeyIdentifier(database, "hotelA", { roomId: room.id });
+  const cycle = currentCycleForRoom(database, room.id);
+  const expiredToken = createCheckoutAttemptToken({
+    tenantId: "hotelA",
+    roomId: room.id,
+    occupancyCycleId: cycle.id,
+    expiresAt: Date.now() - 1000,
+  });
+
+  await assert.rejects(
+    () =>
+      registerCheckoutByIdentifier(database, key.identifier, "qr", {
+        attemptToken: expiredToken,
+      }),
+    (error) => {
+      assert.equal(error.statusCode, 401);
+      assert.equal(error.code, "CHECKOUT_ATTEMPT_EXPIRED");
+      return true;
+    },
+  );
+});
+
+test("concurrent same-cycle checkout requests produce one event", async () => {
+  const database = createFakeDatabase({
+    tenants: {
+      hotelA: { id: "hotelA", name: "Hotel A", slug: "hotel-a", active: true },
+    },
+    tenantModules: {
+      hotelA: { checkout: { moduleId: "checkout", enabled: true } },
+    },
+  });
+  const room = await createRoom(database, "hotelA", { number: "109", status: "occupied" });
+  const key = await createKeyIdentifier(database, "hotelA", { roomId: room.id });
+  const target = await resolveCheckoutByIdentifier(database, key.identifier, "qr");
+  const results = await Promise.all(
+    Array.from({ length: 8 }, () =>
+      registerCheckoutByIdentifier(database, key.identifier, "qr", {
+        attemptToken: target.attemptToken,
+      }),
+    ),
+  );
+
+  assert.equal(results.filter((result) => !result.duplicate).length, 1);
+  assert.equal(results.filter((result) => result.duplicate).length, 7);
+  assert.equal(Object.values(database.data.checkoutEvents).length, 1);
+});
+
+test("different rooms can checkout concurrently", async () => {
+  const database = createFakeDatabase({
+    tenants: {
+      hotelA: { id: "hotelA", name: "Hotel A", slug: "hotel-a", active: true },
+    },
+    tenantModules: {
+      hotelA: { checkout: { moduleId: "checkout", enabled: true } },
+    },
+  });
+  const room109 = await createRoom(database, "hotelA", { number: "109", status: "occupied" });
+  const room204 = await createRoom(database, "hotelA", { number: "204", status: "occupied" });
+  const key109 = await createKeyIdentifier(database, "hotelA", { roomId: room109.id });
+  const key204 = await createKeyIdentifier(database, "hotelA", { roomId: room204.id });
+  const [target109, target204] = await Promise.all([
+    resolveCheckoutByIdentifier(database, key109.identifier, "qr"),
+    resolveCheckoutByIdentifier(database, key204.identifier, "qr"),
+  ]);
+  const [checkout109, checkout204] = await Promise.all([
+    registerCheckoutByIdentifier(database, key109.identifier, "qr", {
+      attemptToken: target109.attemptToken,
+    }),
+    registerCheckoutByIdentifier(database, key204.identifier, "qr", {
+      attemptToken: target204.attemptToken,
+    }),
+  ]);
+
+  assert.equal(checkout109.duplicate, false);
+  assert.equal(checkout204.duplicate, false);
+  assert.equal(Object.values(database.data.checkoutEvents).length, 2);
 });
 
 test("direct checkout URL is normalized to the secure key identifier", () => {

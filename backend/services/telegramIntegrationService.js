@@ -1,8 +1,12 @@
 import { randomInt } from "node:crypto";
 import { updateTenantSettings } from "./tenantSettingsService.js";
+import { updateRoom } from "./checkoutService.js";
 
 const PAIRING_DIAGNOSTIC_KEY = "telegramPairingCodes";
+const BOARD_DIAGNOSTIC_KEY = "telegramHousekeepingBoards";
+const READY_CONFIRMATION_DIAGNOSTIC_KEY = "telegramReadyConfirmations";
 const PAIRING_CODE_TTL_MINUTES = 10;
+const READY_CONFIRMATION_TTL_SECONDS = 30;
 const PAIRING_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 function now() {
@@ -59,6 +63,195 @@ async function savePairingState(database, state) {
       ),
     ),
   });
+}
+
+async function getDiagnosticValue(database, key) {
+  const stored = await database.getRecord("diagnostics", key);
+  return stored?.value && typeof stored.value === "object" ? stored.value : stored || {};
+}
+
+async function saveDiagnosticValue(database, key, value) {
+  await database.setRecord("diagnostics", key, value);
+}
+
+async function resolveTenant(database, input = {}) {
+  const tenantId = cleanString(input.tenantId);
+  const tenantSlug = cleanString(input.tenantSlug || input.slug);
+
+  if (tenantId) {
+    const tenant = await database.getRecord("tenants", tenantId);
+
+    if (tenant && tenant.active !== false) {
+      return tenant;
+    }
+  }
+
+  const tenants = await database.listRecords("tenants");
+
+  if (tenantSlug) {
+    return tenants.find((tenant) => tenant.slug === tenantSlug && tenant.active !== false);
+  }
+
+  const activeTenants = tenants.filter((tenant) => tenant.active !== false);
+  return activeTenants.length === 1 ? activeTenants[0] : undefined;
+}
+
+function latestEventByRoom(events) {
+  const byRoom = new Map();
+
+  for (const event of [...events].sort(
+    (left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime(),
+  )) {
+    if (!byRoom.has(event.roomId)) {
+      byRoom.set(event.roomId, event);
+    }
+  }
+
+  return byRoom;
+}
+
+async function requireTelegramTenant(database, input = {}) {
+  const tenant = await resolveTenant(database, input);
+
+  if (!tenant) {
+    const error = new Error("Tenant not found.");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  return tenant;
+}
+
+function cleanPendingConfirmations(confirmations = {}) {
+  return Object.fromEntries(
+    Object.entries(confirmations).filter(
+      ([, record]) => record?.expiresAt && new Date(record.expiresAt).getTime() > Date.now(),
+    ),
+  );
+}
+
+function confirmationKey({ chatId, telegramUserId, eventId }) {
+  return `${chatId}:${telegramUserId}:${eventId}`;
+}
+
+export async function getHousekeepingBoard(database, input = {}) {
+  const tenant = await requireTelegramTenant(database, input);
+  const [rooms, events, boards] = await Promise.all([
+    database.listTenantRecords("rooms", tenant.id),
+    database.listTenantRecords("checkoutEvents", tenant.id),
+    getDiagnosticValue(database, BOARD_DIAGNOSTIC_KEY),
+  ]);
+  const eventByRoom = latestEventByRoom(events);
+  const pendingStatuses = new Set(["ready_for_cleaning", "cleaning"]);
+  const items = rooms
+    .filter((room) => room.active !== false && pendingStatuses.has(room.status))
+    .sort((left, right) => String(left.number).localeCompare(String(right.number)))
+    .map((room) => {
+      const event = eventByRoom.get(room.id);
+
+      return {
+        roomId: room.id,
+        roomNumber: room.number,
+        roomName: room.name || "",
+        status: room.status,
+        eventId: event?.id || "",
+        checkoutTimestamp: event?.timestamp || room.lastCheckoutAt || "",
+        source: event?.source || room.lastCheckoutSource || "",
+      };
+    });
+
+  return {
+    tenant: publicTenant(tenant),
+    board: boards[tenant.id] || {},
+    updatedAt: now(),
+    items,
+    summary: {
+      waiting: items.filter((item) => item.status === "ready_for_cleaning").length,
+      cleaning: items.filter((item) => item.status === "cleaning").length,
+      total: items.length,
+    },
+  };
+}
+
+export async function saveHousekeepingBoardMessage(database, input = {}) {
+  const tenant = await requireTelegramTenant(database, input);
+  const boards = await getDiagnosticValue(database, BOARD_DIAGNOSTIC_KEY);
+  boards[tenant.id] = {
+    tenantId: tenant.id,
+    chatId: cleanString(input.chatId),
+    messageId: cleanString(input.messageId),
+    threadId: cleanString(input.threadId),
+    updatedAt: now(),
+  };
+  await saveDiagnosticValue(database, BOARD_DIAGNOSTIC_KEY, boards);
+
+  return getHousekeepingBoard(database, { tenantId: tenant.id });
+}
+
+export async function handleHousekeepingAction(database, input = {}) {
+  const tenant = await requireTelegramTenant(database, input);
+  const action = cleanString(input.action || input.type).toLowerCase();
+  const eventId = cleanString(input.eventId || input.checkoutEventId);
+  const chatId = cleanString(input.chatId || input.message?.chat?.id);
+  const telegramUserId = cleanString(input.telegramUserId || input.from?.id);
+
+  if (action !== "ready" || !eventId || !chatId || !telegramUserId) {
+    const error = new Error("Invalid housekeeping action.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const event = await database.getTenantRecord("checkoutEvents", tenant.id, eventId);
+
+  if (!event) {
+    const error = new Error("Checkout event not found.");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const room = await database.getTenantRecord("rooms", tenant.id, event.roomId);
+
+  if (!room || room.active === false) {
+    const error = new Error("Room not found.");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const state = await getDiagnosticValue(database, READY_CONFIRMATION_DIAGNOSTIC_KEY);
+  state.pending = cleanPendingConfirmations(state.pending);
+  const key = confirmationKey({ chatId, telegramUserId, eventId });
+  const pending = state.pending[key];
+
+  if (!pending) {
+    const expiresAt = new Date(Date.now() + READY_CONFIRMATION_TTL_SECONDS * 1000).toISOString();
+    state.pending[key] = {
+      tenantId: tenant.id,
+      roomId: room.id,
+      eventId,
+      chatId,
+      telegramUserId,
+      expiresAt,
+      createdAt: now(),
+    };
+    await saveDiagnosticValue(database, READY_CONFIRMATION_DIAGNOSTIC_KEY, state);
+
+    return {
+      success: true,
+      confirmationRequired: true,
+      expiresAt,
+      board: await getHousekeepingBoard(database, { tenantId: tenant.id }),
+    };
+  }
+
+  delete state.pending[key];
+  await saveDiagnosticValue(database, READY_CONFIRMATION_DIAGNOSTIC_KEY, state);
+  await updateRoom(database, tenant.id, room.id, { status: "ready" });
+
+  return {
+    success: true,
+    confirmed: true,
+    board: await getHousekeepingBoard(database, { tenantId: tenant.id }),
+  };
 }
 
 export async function createTelegramPairingCode(database, tenantId) {

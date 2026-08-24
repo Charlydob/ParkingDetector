@@ -2,6 +2,8 @@ import QRCode from "qrcode";
 import {
   createKeyIdentifier,
   createRoom,
+  createKeyIdentifiersBulk,
+  createRoomsBulk,
   listCheckoutOverview,
   listKeyIdentifiers,
   registerCheckout,
@@ -21,6 +23,16 @@ function publicBaseUrl(request) {
 
 function keyCheckoutUrl(request, key) {
   return `${publicBaseUrl(request)}/checkout/${encodeURIComponent(key.identifier)}`;
+}
+
+async function withQrPayload(request, key) {
+  const checkoutUrl = keyCheckoutUrl(request, key);
+
+  return {
+    ...key,
+    checkoutUrl,
+    qrDataUrl: await QRCode.toDataURL(checkoutUrl),
+  };
 }
 
 export async function handleCheckoutRoute({ request, pathname, parsedUrl, body, context }) {
@@ -52,6 +64,18 @@ export async function handleCheckoutRoute({ request, pathname, parsedUrl, body, 
     return { status: 201, payload: await createRoom(database, tenantId, body) };
   }
 
+  if (request.method === "POST" && pathname === "/api/checkout/rooms/bulk") {
+    requireTenantAdmin(session, tenantId);
+    const result = await createRoomsBulk(database, tenantId, body);
+    return {
+      status: 201,
+      payload: {
+        ...result,
+        keys: await Promise.all(result.keys.map((key) => withQrPayload(request, key))),
+      },
+    };
+  }
+
   const roomMatch = pathname.match(/^\/api\/checkout\/rooms\/([^/]+)$/);
   if (request.method === "PATCH" && roomMatch) {
     requireTenantAdmin(session, tenantId);
@@ -66,10 +90,20 @@ export async function handleCheckoutRoute({ request, pathname, parsedUrl, body, 
     const key = await createKeyIdentifier(database, tenantId, body);
     return {
       status: 201,
+      payload: await withQrPayload(request, key),
+    };
+  }
+
+  if (request.method === "POST" && pathname === "/api/checkout/keys/bulk") {
+    requireTenantAdmin(session, tenantId);
+    const result = await createKeyIdentifiersBulk(database, tenantId, body);
+    return {
+      status: 201,
       payload: {
-        ...key,
-        checkoutUrl: keyCheckoutUrl(request, key),
-        qrDataUrl: await QRCode.toDataURL(keyCheckoutUrl(request, key)),
+        ...result,
+        keys: await Promise.all(
+          [...result.created, ...result.regenerated].map((key) => withQrPayload(request, key)),
+        ),
       },
     };
   }
@@ -85,11 +119,7 @@ export async function handleCheckoutRoute({ request, pathname, parsedUrl, body, 
     );
     return {
       status: 200,
-      payload: {
-        ...key,
-        checkoutUrl: keyCheckoutUrl(request, key),
-        qrDataUrl: await QRCode.toDataURL(keyCheckoutUrl(request, key)),
-      },
+      payload: await withQrPayload(request, key),
     };
   }
 
@@ -130,7 +160,7 @@ export async function handleCheckoutRoute({ request, pathname, parsedUrl, body, 
   return undefined;
 }
 
-export async function handlePublicCheckoutRoute({ request, pathname, context }) {
+export async function handlePublicCheckoutRoute({ request, pathname, body = {}, context }) {
   const { database, publicCheckoutLimiter } = context;
 
   const publicPageMatch = pathname.match(/^\/api\/public\/tenants\/([^/]+)\/checkout$/);
@@ -177,7 +207,9 @@ export async function handlePublicCheckoutRoute({ request, pathname, context }) 
 
   if (request.method === "POST" && checkoutMatch) {
     const ip = request.socket?.remoteAddress || "unknown";
-    if (!publicCheckoutLimiter.allow(ip)) {
+    const checkoutIdentifier = decodeURIComponent(checkoutMatch[1]);
+
+    if (!publicCheckoutLimiter.allow(`${ip}:${checkoutIdentifier}`)) {
       const error = new Error("Too many checkout attempts. Please wait a moment.");
       error.statusCode = 429;
       error.code = "RATE_LIMITED";
@@ -186,8 +218,9 @@ export async function handlePublicCheckoutRoute({ request, pathname, context }) 
 
     const result = await registerCheckoutByIdentifier(
       database,
-      decodeURIComponent(checkoutMatch[1]),
+      checkoutIdentifier,
       "qr",
+      { attemptToken: body.attemptToken },
     );
 
     return {

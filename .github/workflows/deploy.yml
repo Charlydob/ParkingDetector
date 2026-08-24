@@ -73,6 +73,7 @@ jobs:
               exit 1
             fi
 
+            export GIT_SHA="$DEPLOY_SHA"
             docker compose -f docker-compose.hetzner.yml build --pull backend frontend
             docker compose -f docker-compose.hetzner.yml up -d --force-recreate --remove-orphans
             docker compose -f docker-compose.hetzner.yml ps
@@ -92,4 +93,29 @@ jobs:
             docker compose -f docker-compose.hetzner.yml ps
             docker compose -f docker-compose.hetzner.yml logs --tail=100 backend frontend
             exit 1
+          EOF
+
+      - name: Verify deployed commit
+        env:
+          SSH_HOST: ${{ secrets.HETZNER_SSH_HOST }}
+          SSH_USER: ${{ secrets.HETZNER_SSH_USER }}
+          DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          ssh "$SSH_USER@$SSH_HOST" "DEPLOY_SHA='$DEPLOY_SHA' bash -s" <<'EOF'
+            set -euo pipefail
+
+            BACKEND_SHA="$(curl --fail --silent --show-error http://127.0.0.1:3001/api/version | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{const p=JSON.parse(d);process.stdout.write(p.sha || p.version || '')})")"
+            FRONTEND_SHA="$(curl --fail --silent --show-error http://127.0.0.1:3000/version.json | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{const p=JSON.parse(d);process.stdout.write(p.sha || p.version || '')})")"
+
+            if [ "$BACKEND_SHA" != "$DEPLOY_SHA" ]; then
+              echo "Backend SHA mismatch: expected $DEPLOY_SHA but /api/version returned $BACKEND_SHA"
+              exit 1
+            fi
+
+            if [ "$FRONTEND_SHA" != "$DEPLOY_SHA" ]; then
+              echo "Frontend SHA mismatch: expected $DEPLOY_SHA but /version.json returned $FRONTEND_SHA"
+              exit 1
+            fi
+
+            echo "Backend and frontend expose deployed commit $DEPLOY_SHA"
           EOF

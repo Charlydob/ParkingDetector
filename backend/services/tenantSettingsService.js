@@ -34,6 +34,18 @@ function maskSecret(value) {
   return `${"*".repeat(10)}${secret.slice(-4)}`;
 }
 
+function cleanTelegramDiagnostics(diagnostics = {}) {
+  return {
+    lastAttemptAt: cleanString(diagnostics.lastAttemptAt),
+    lastSuccessAt: cleanString(diagnostics.lastSuccessAt),
+    lastError: cleanString(diagnostics.lastError),
+    httpStatus: diagnostics.httpStatus === undefined ? undefined : Number(diagnostics.httpStatus),
+    checkoutEventId: cleanString(diagnostics.checkoutEventId),
+    room: cleanString(diagnostics.room),
+    source: cleanString(diagnostics.source),
+  };
+}
+
 function cleanMapping(mapping = {}) {
   return {
     ...Object.fromEntries(
@@ -150,6 +162,7 @@ function normalizeSettings(tenantId, stored = {}) {
         connectedAt: cleanString(next.notifications?.telegram?.connectedAt),
         telegramUserId: cleanString(next.notifications?.telegram?.telegramUserId),
         telegramUsername: cleanString(next.notifications?.telegram?.telegramUsername),
+        diagnostics: cleanTelegramDiagnostics(next.notifications?.telegram?.diagnostics),
       },
     },
   };

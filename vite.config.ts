@@ -5,6 +5,7 @@ import path from "node:path";
 
 const repositoryName = "ParkingDetector";
 const isGitHubPages = process.env.GITHUB_ACTIONS === "true";
+const gitSha = process.env.VITE_GIT_SHA || process.env.GIT_SHA || "unknown";
 
 export default defineConfig({
   appType: "spa",
@@ -18,6 +19,16 @@ export default defineConfig({
   },
   plugins: [
     react(),
+    {
+      name: "frontend-version-json",
+      generateBundle() {
+        this.emitFile({
+          type: "asset",
+          fileName: "version.json",
+          source: `${JSON.stringify({ sha: gitSha, version: gitSha }, null, 2)}\n`,
+        });
+      },
+    },
     {
       name: "checkin-demo-route",
       configureServer(server) {

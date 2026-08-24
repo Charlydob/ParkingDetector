@@ -5,6 +5,9 @@ export function handleVersionRoute({ request, pathname, env = process.env }) {
     return {
       status: 200,
       payload: getVersionPayload(env),
+      headers: {
+        "Cache-Control": "no-store",
+      },
     };
   }
 

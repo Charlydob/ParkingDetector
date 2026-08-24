@@ -2,6 +2,52 @@ function cleanString(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function publicDiagnostics(diagnostics = {}) {
+  return {
+    lastAttemptAt: cleanString(diagnostics.lastAttemptAt),
+    lastSuccessAt: cleanString(diagnostics.lastSuccessAt),
+    lastError: cleanString(diagnostics.lastError),
+    httpStatus: diagnostics.httpStatus === undefined ? undefined : Number(diagnostics.httpStatus),
+    checkoutEventId: cleanString(diagnostics.checkoutEventId),
+    room: cleanString(diagnostics.room),
+    source: cleanString(diagnostics.source),
+  };
+}
+
+function diagnosticPayload({ event, room, patch = {} }) {
+  return {
+    lastAttemptAt: new Date().toISOString(),
+    checkoutEventId: cleanString(event?.id),
+    room: cleanString(room?.number),
+    source: cleanString(event?.source),
+    ...patch,
+  };
+}
+
+async function saveTelegramDiagnostics(database, tenantId, diagnostics) {
+  if (!database || !tenantId) {
+    return;
+  }
+
+  const current = (await database.getRecord("tenantSettings", tenantId)) || {};
+  const notifications = current.notifications || {};
+  const telegram = notifications.telegram || {};
+
+  await database.setRecord("tenantSettings", tenantId, {
+    ...current,
+    notifications: {
+      ...notifications,
+      telegram: {
+        ...telegram,
+        diagnostics: {
+          ...(telegram.diagnostics || {}),
+          ...diagnostics,
+        },
+      },
+    },
+  });
+}
+
 export function getPublicNotificationSettings(settings = {}) {
   const telegram = settings.telegram || {};
 
@@ -12,15 +58,26 @@ export function getPublicNotificationSettings(settings = {}) {
       chatTitle: cleanString(telegram.chatTitle),
       chatType: cleanString(telegram.chatType),
       connectedAt: cleanString(telegram.connectedAt),
+      diagnostics: publicDiagnostics(telegram.diagnostics),
     },
   };
 }
 
-export async function sendCheckoutNotification({ tenant, tenantSettings, room, event }) {
+export async function sendCheckoutNotification({ database, tenant, tenantSettings, room, event }) {
   const telegram = tenantSettings?.notifications?.telegram || tenantSettings?.telegram || {};
+  const tenantId = tenant?.id || event?.tenantId;
 
   if (!telegram.enabled || !cleanString(telegram.chatId)) {
-    return { sent: false, skipped: true };
+    const diagnostics = diagnosticPayload({
+      event,
+      room,
+      patch: {
+        lastError: "Telegram notification is not enabled or chatId is missing.",
+        httpStatus: undefined,
+      },
+    });
+    await saveTelegramDiagnostics(database, tenantId, diagnostics);
+    return { sent: false, skipped: true, diagnostics };
   }
 
   const webhookUrl = cleanString(process.env.N8N_CHECKOUT_WEBHOOK_URL);
@@ -28,7 +85,16 @@ export async function sendCheckoutNotification({ tenant, tenantSettings, room, e
 
   if (!webhookUrl || !webhookSecret) {
     console.warn("[Notifications] n8n checkout webhook is not configured.");
-    return { sent: false, skipped: true };
+    const diagnostics = diagnosticPayload({
+      event,
+      room,
+      patch: {
+        lastError: "n8n checkout webhook is not configured.",
+        httpStatus: undefined,
+      },
+    });
+    await saveTelegramDiagnostics(database, tenantId, diagnostics);
+    return { sent: false, skipped: true, diagnostics };
   }
 
   const payload = {
@@ -64,18 +130,66 @@ export async function sendCheckoutNotification({ tenant, tenantSettings, room, e
     });
 
     if (!response.ok) {
-      throw new Error(`n8n HTTP ${response.status}`);
+      const error = new Error(`n8n HTTP ${response.status}`);
+      error.httpStatus = response.status;
+      throw error;
     }
 
-    return { sent: true };
+    const diagnostics = diagnosticPayload({
+      event,
+      room,
+      patch: {
+        lastSuccessAt: new Date().toISOString(),
+        lastError: "",
+        httpStatus: response.status,
+      },
+    });
+    await saveTelegramDiagnostics(database, tenantId, diagnostics);
+
+    return { sent: true, httpStatus: response.status, diagnostics };
   } catch (error) {
-    console.warn(
-      `[Notifications] n8n checkout webhook failed: ${
-        error instanceof Error ? error.message : "unknown error"
-      }`,
-    );
-    return { sent: false, error: error instanceof Error ? error.message : "unknown error" };
+    const httpStatus = Number(error?.httpStatus) || undefined;
+    const message = error instanceof Error ? error.message : "unknown error";
+    console.warn(`[Notifications] n8n checkout webhook failed: ${message}`);
+    const diagnostics = diagnosticPayload({
+      event,
+      room,
+      patch: {
+        lastError: message,
+        httpStatus,
+      },
+    });
+    await saveTelegramDiagnostics(database, tenantId, diagnostics);
+
+    return { sent: false, error: message, httpStatus, diagnostics };
   }
+}
+
+export async function sendTestCheckoutNotification({ database, tenant, tenantSettings }) {
+  const event = {
+    id: `test-${Date.now()}`,
+    tenantId: tenant?.id || tenantSettings?.tenantId || "",
+    source: "test",
+    timestamp: new Date().toISOString(),
+  };
+  const room = {
+    id: "test-room",
+    number: "Test",
+    name: "Telegram test",
+  };
+
+  return sendCheckoutNotification({
+    database,
+    tenant,
+    tenantSettings,
+    room,
+    event,
+  });
+}
+
+export async function getTelegramDiagnostics(database, tenantId) {
+  const settings = await database.getRecord("tenantSettings", tenantId);
+  return publicDiagnostics(settings?.notifications?.telegram?.diagnostics);
 }
 
 export async function sendUserInvitationNotification({ invitation, tenant, inviteUrl }) {

@@ -488,6 +488,41 @@ button:disabled {
   width: 100%;
 }
 
+.qr-gallery {
+  border-top: 1px solid #edf1f5;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  padding-top: 12px;
+}
+
+.qr-gallery div {
+  border: 1px solid #dce4ec;
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  padding: 10px;
+  text-align: center;
+}
+
+.qr-gallery img {
+  aspect-ratio: 1;
+  width: min(120px, 100%);
+}
+
+.qr-gallery span {
+  color: #667287;
+  font-size: 0.82rem;
+}
+
+.qr-gallery button {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+  min-height: 32px;
+}
+
 .checkbox-row {
   align-items: center;
   display: flex !important;

@@ -101,6 +101,7 @@ export interface CheckInResult {
 
 export interface AppVersion {
   version: string;
+  sha?: string;
   environment: string;
 }
 
@@ -120,6 +121,7 @@ export interface PublicCheckoutTarget {
     name: string;
     slug: string;
   };
+  attemptToken: string;
 }
 
 export class BackendRequestError extends Error {
@@ -190,6 +192,15 @@ export interface IntegrationSettings {
       chatTitle?: string;
       chatType?: string;
       connectedAt?: string;
+      diagnostics?: {
+        lastAttemptAt?: string;
+        lastSuccessAt?: string;
+        lastError?: string;
+        httpStatus?: number;
+        checkoutEventId?: string;
+        room?: string;
+        source?: string;
+      };
     };
   };
   reservationDiagnostics?: {
@@ -291,6 +302,7 @@ function normalizeIntegrationSettings(payload: IntegrationSettings): Integration
         chatTitle: payload.notifications?.telegram?.chatTitle || "",
         chatType: payload.notifications?.telegram?.chatType || "",
         connectedAt: payload.notifications?.telegram?.connectedAt || "",
+        diagnostics: payload.notifications?.telegram?.diagnostics || {},
       },
     },
     reservationDiagnostics: payload.reservationDiagnostics,
@@ -576,6 +588,19 @@ export async function disconnectTelegram(): Promise<IntegrationSettings> {
   );
 }
 
+export async function testTelegramNotification(): Promise<{
+  success: boolean;
+  skipped: boolean;
+  error?: string;
+  httpStatus?: number;
+  diagnostics?: NonNullable<IntegrationSettings["notifications"]>["telegram"]["diagnostics"];
+}> {
+  return requestJson("/api/integrations/telegram/test", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
 export async function testFrigate(baseUrl: string): Promise<{ connected: boolean; version?: string | null }> {
   return requestJson("/api/settings/frigate/test", {
     method: "POST",
@@ -668,6 +693,28 @@ export async function createRoom(input: Partial<Room>): Promise<Room> {
   });
 }
 
+export async function createRoomsBulk(input: {
+  numbers: string;
+  createQr?: boolean;
+  keyLabel?: string;
+}): Promise<{
+  created: Room[];
+  skippedExisting: Array<{ id: string; number: string }>;
+  duplicateInput: string[];
+  keys: Array<KeyIdentifier & { qrDataUrl: string; checkoutUrl: string }>;
+  summary: {
+    created: number;
+    skippedExisting: number;
+    duplicateInput: number;
+    keysCreated: number;
+  };
+}> {
+  return requestJson("/api/checkout/rooms/bulk", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 export async function updateRoom(roomId: string, input: Partial<Room>): Promise<Room> {
   return requestJson<Room>(`/api/checkout/rooms/${encodeURIComponent(roomId)}`, {
     method: "PATCH",
@@ -682,6 +729,27 @@ export async function createCheckoutKey(input: {
   return requestJson("/api/checkout/keys", {
     method: "POST",
     body: JSON.stringify({ ...input, type: "qr" }),
+  });
+}
+
+export async function createCheckoutKeysBulk(input: {
+  label?: string;
+  regenerateExisting?: boolean;
+}): Promise<{
+  created: KeyIdentifier[];
+  regenerated: KeyIdentifier[];
+  skippedExisting: Array<{ id: string; roomId: string; roomNumber: string; label: string }>;
+  keys: Array<KeyIdentifier & { qrDataUrl: string; checkoutUrl: string }>;
+  summary: {
+    created: number;
+    regenerated: number;
+    skippedExisting: number;
+    rooms: number;
+  };
+}> {
+  return requestJson("/api/checkout/keys/bulk", {
+    method: "POST",
+    body: JSON.stringify(input),
   });
 }
 
@@ -716,7 +784,7 @@ export async function resolvePublicCheckout(token: string): Promise<PublicChecko
   );
 }
 
-export async function submitPublicCheckout(token: string): Promise<{
+export async function submitPublicCheckout(token: string, attemptToken: string): Promise<{
   success: boolean;
   duplicate: boolean;
   timestamp: string;
@@ -724,7 +792,7 @@ export async function submitPublicCheckout(token: string): Promise<{
 }> {
   return requestPublicJson(`/api/public/checkout/${encodeURIComponent(token)}`, {
     method: "POST",
-    body: JSON.stringify({}),
+    body: JSON.stringify({ attemptToken }),
   });
 }
 

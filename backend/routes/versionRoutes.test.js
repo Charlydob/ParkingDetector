@@ -15,8 +15,10 @@ test("GET /api/version returns deployed commit and environment", () => {
   assert.equal(result.status, 200);
   assert.deepEqual(result.payload, {
     version: "abcdef123456",
+    sha: "abcdef1234567890",
     environment: "production",
   });
+  assert.equal(result.headers["Cache-Control"], "no-store");
 });
 
 test("GET /api/version falls back safely when no SHA is configured", () => {
@@ -29,6 +31,7 @@ test("GET /api/version falls back safely when no SHA is configured", () => {
   assert.equal(result.status, 200);
   assert.deepEqual(result.payload, {
     version: "unknown",
+    sha: "unknown",
     environment: "development",
   });
 });

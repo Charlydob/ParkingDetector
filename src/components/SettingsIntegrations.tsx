@@ -22,6 +22,7 @@ import {
   testGoogleSheets,
   testJsonFeed,
   testStripe,
+  testTelegramNotification,
   type IntegrationSettings,
   type BackendStatus,
   type JsonAuthSettings,
@@ -362,6 +363,7 @@ export function SettingsIntegrations({
   const telegramSettings = settings?.notifications?.telegram;
   const telegramConnected = Boolean(telegramSettings?.enabled && telegramSettings.chatId);
   const telegramConnectCommand = telegramPairing ? `/connect ${telegramPairing.code}` : "";
+  const telegramDiagnostics = telegramSettings?.diagnostics || {};
 
   return (
     <section className="settings-page">
@@ -989,6 +991,22 @@ export function SettingsIntegrations({
               <strong>{telegramSettings?.chatTitle || telegramSettings?.chatId || "-"}</strong>
               <span>Conectado</span>
               <strong>{formatDate(telegramSettings?.connectedAt)}</strong>
+              <span>Last attempt</span>
+              <strong>{formatDate(telegramDiagnostics.lastAttemptAt)}</strong>
+              <span>Last success</span>
+              <strong>{formatDate(telegramDiagnostics.lastSuccessAt)}</strong>
+              <span>Last error</span>
+              <strong className={telegramDiagnostics.lastError ? "error-text" : ""}>
+                {telegramDiagnostics.lastError || "No errors"}
+              </strong>
+              <span>HTTP status</span>
+              <strong>{telegramDiagnostics.httpStatus || "-"}</strong>
+              <span>Checkout event</span>
+              <strong>{telegramDiagnostics.checkoutEventId || "-"}</strong>
+              <span>Room</span>
+              <strong>{telegramDiagnostics.room || "-"}</strong>
+              <span>Source</span>
+              <strong>{telegramDiagnostics.source || "-"}</strong>
             </div>
 
             {telegramPairing && (
@@ -1036,6 +1054,29 @@ export function SettingsIntegrations({
                   Copiar comando
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() =>
+                  run(
+                    "telegram-test",
+                    async () => {
+                      const result = await testTelegramNotification();
+                      await reloadSettings();
+
+                      if (!result.success) {
+                        throw new Error(result.error || "Telegram test notification failed.");
+                      }
+
+                      return result;
+                    },
+                    "Telegram test notification sent.",
+                  )
+                }
+                disabled={busy !== "" || !telegramConnected}
+              >
+                <Wifi size={15} />
+                Send test notification
+              </button>
               <button
                 type="button"
                 onClick={() =>

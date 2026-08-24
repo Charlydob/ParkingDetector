@@ -1,7 +1,7 @@
 import { Html5Qrcode } from "html5-qrcode";
 import { AlertCircle, CheckCircle2, QrCode } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { LOCALES, getBrowserLocale, t, type Locale } from "../../i18n";
+import { LOCALES, t, type Locale } from "../../i18n";
 import {
   BackendRequestError,
   getPublicCheckoutTenant,
@@ -50,7 +50,7 @@ function tokenFromQrText(value: string) {
 
 export function PublicCheckoutPage() {
   const scannerRef = useRef<Html5Qrcode | null>(null);
-  const [locale, setLocale] = useState<Locale>(getBrowserLocale());
+  const [locale, setLocale] = useState<Locale>("en");
   const [tenantName, setTenantName] = useState("");
   const [checkoutToken, setCheckoutToken] = useState(tokenFromPath());
   const [target, setTarget] = useState<PublicCheckoutTarget>();
@@ -134,7 +134,7 @@ export function PublicCheckoutPage() {
 
   async function confirmCheckout() {
     try {
-      const result = await submitPublicCheckout(checkoutToken);
+      const result = await submitPublicCheckout(checkoutToken, target?.attemptToken || "");
       setState(result.duplicate ? "duplicate" : "done");
       setMessage(result.duplicate ? t(locale, "duplicate") : t(locale, "completedBody"));
     } catch (error) {

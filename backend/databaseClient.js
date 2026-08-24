@@ -12,6 +12,7 @@ const MODEL_BY_COLLECTION = {
   rooms: "room",
   keyIdentifiers: "keyIdentifier",
   checkoutEvents: "checkoutEvent",
+  occupancyCycles: "occupancyCycle",
   invitations: "invitation",
   userInvitations: "invitation",
   detections: "detection",
@@ -24,6 +25,7 @@ const TENANT_SCOPED = new Set([
   "rooms",
   "keyIdentifiers",
   "checkoutEvents",
+  "occupancyCycles",
   "detections",
   "checkIns",
   "invitations",
@@ -44,6 +46,9 @@ const DATE_FIELDS = new Set([
   "seenAgainAt",
   "releasedAt",
   "lastCheckoutAt",
+  "openedAt",
+  "consumedAt",
+  "departureAt",
 ]);
 
 const JSON_FIELDS = new Set([
@@ -206,11 +211,73 @@ function orderByFor(collection) {
     return { timestamp: "desc" };
   }
 
+  if (collection === "occupancyCycles") {
+    return { openedAt: "desc" };
+  }
+
   if (collection === "invitations" || collection === "userInvitations") {
     return { createdAt: "desc" };
   }
 
   return undefined;
+}
+
+function mergeMetadata(left, right) {
+  return {
+    ...(left && typeof left === "object" && !Array.isArray(left) ? left : {}),
+    ...(right && typeof right === "object" && !Array.isArray(right) ? right : {}),
+  };
+}
+
+function cleanString(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function lifecycleError(message, statusCode, code) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  error.code = code;
+  return error;
+}
+
+async function lockOccupancyCycle(tx, tenantId, roomId) {
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`occupancy:${tenantId}:${roomId}`}))`;
+}
+
+function occupancyPatch(input = {}) {
+  const patch = {
+    ...(input.reservationCode !== undefined
+      ? { reservationCode: cleanString(input.reservationCode) || null }
+      : {}),
+    ...(input.guestName !== undefined ? { guestName: cleanString(input.guestName) || null } : {}),
+    ...(input.guestEmail !== undefined ? { guestEmail: cleanString(input.guestEmail) || null } : {}),
+    ...(input.departureAt !== undefined && input.departureAt
+      ? { departureAt: new Date(input.departureAt) }
+      : input.departureAt === null
+        ? { departureAt: null }
+        : {}),
+  };
+
+  return patch;
+}
+
+async function createCurrentOccupancyCycle(tx, { tenantId, roomId, reason, metadata = {}, ...patch }) {
+  const latest = await tx.occupancyCycle.findFirst({
+    where: { tenantId, roomId },
+    orderBy: { cycleNumber: "desc" },
+  });
+
+  return tx.occupancyCycle.create({
+    data: normalizeForWrite({
+      tenantId,
+      roomId,
+      cycleNumber: (latest?.cycleNumber || 0) + 1,
+      openedAt: new Date(),
+      createdReason: cleanString(reason) || "ready",
+      metadata,
+      ...occupancyPatch(patch),
+    }),
+  });
 }
 
 export function createDatabaseClient() {
@@ -303,6 +370,185 @@ export function createDatabaseClient() {
         create: { tenantId, moduleId, enabled: Boolean(enabled) },
         update: { enabled: Boolean(enabled) },
       });
+      return normalizeForRead(result);
+    },
+
+    async ensureCurrentOccupancyCycle(input) {
+      const result = await prisma.$transaction(async (tx) => {
+        await lockOccupancyCycle(tx, input.tenantId, input.roomId);
+
+        const current = await tx.occupancyCycle.findFirst({
+          where: {
+            tenantId: input.tenantId,
+            roomId: input.roomId,
+            consumedAt: null,
+          },
+        });
+
+        if (current) {
+          const patch = occupancyPatch(input);
+          const metadata = mergeMetadata(current.metadata, input.metadata);
+          const shouldUpdate =
+            Object.keys(patch).length > 0 ||
+            (input.metadata &&
+              typeof input.metadata === "object" &&
+              Object.keys(input.metadata).length > 0);
+
+          if (!shouldUpdate) {
+            return { cycle: current, created: false };
+          }
+
+          return {
+            cycle: await tx.occupancyCycle.update({
+              where: { id: current.id },
+              data: normalizeForWrite({
+                ...patch,
+                metadata,
+              }),
+            }),
+            created: false,
+          };
+        }
+
+        return {
+          cycle: await createCurrentOccupancyCycle(tx, input),
+          created: true,
+        };
+      });
+
+      return {
+        cycle: normalizeForRead(result.cycle),
+        created: result.created,
+      };
+    },
+
+    async registerCheckoutForCurrentCycle(input) {
+      const result = await prisma.$transaction(async (tx) => {
+        await lockOccupancyCycle(tx, input.tenantId, input.roomId);
+
+        const room = await tx.room.findUnique({ where: { id: input.roomId } });
+        if (!room || room.tenantId !== input.tenantId || room.active === false) {
+          throw lifecycleError("Room not found.", 404, "ROOM_NOT_FOUND");
+        }
+
+        const current = await tx.occupancyCycle.findFirst({
+          where: {
+            tenantId: input.tenantId,
+            roomId: input.roomId,
+            consumedAt: null,
+          },
+        });
+
+        if (current && input.occupancyCycleId && current.id !== input.occupancyCycleId) {
+          throw lifecycleError("This checkout page is no longer valid.", 409, "STALE_CHECKOUT_ATTEMPT");
+        }
+
+        if (!current && input.occupancyCycleId) {
+          const attemptedCycle = await tx.occupancyCycle.findUnique({
+            where: { id: input.occupancyCycleId },
+          });
+          const newerCycle = await tx.occupancyCycle.findFirst({
+            where: {
+              tenantId: input.tenantId,
+              roomId: input.roomId,
+              consumedAt: null,
+            },
+          });
+
+          if (newerCycle) {
+            throw lifecycleError("This checkout page is no longer valid.", 409, "STALE_CHECKOUT_ATTEMPT");
+          }
+
+          if (
+            attemptedCycle?.tenantId === input.tenantId &&
+            attemptedCycle.roomId === input.roomId &&
+            attemptedCycle.consumedAt
+          ) {
+            const duplicateEvent = await tx.checkoutEvent.findUnique({
+              where: { occupancyCycleId: attemptedCycle.id },
+            });
+
+            if (duplicateEvent) {
+              return {
+                duplicate: true,
+                event: duplicateEvent,
+                room,
+              };
+            }
+          }
+
+          throw lifecycleError("This checkout page is no longer valid.", 409, "STALE_CHECKOUT_ATTEMPT");
+        }
+
+        const cycle =
+          current ||
+          (await createCurrentOccupancyCycle(tx, {
+            tenantId: input.tenantId,
+            roomId: input.roomId,
+            reason: "checkout_recovery",
+            metadata: {
+              recoveredBy: input.source,
+            },
+          }));
+
+        const timestamp = new Date();
+
+        try {
+          const event = await tx.checkoutEvent.create({
+            data: normalizeForWrite({
+              id: input.id,
+              tenantId: input.tenantId,
+              roomId: input.roomId,
+              occupancyCycleId: cycle.id,
+              source: input.source,
+              sourceIdentifier: input.sourceIdentifier,
+              timestamp,
+              status: "registered",
+              metadata: input.metadata || {},
+            }),
+          });
+
+          await tx.occupancyCycle.update({
+            where: { id: cycle.id },
+            data: { consumedAt: timestamp },
+          });
+
+          const updatedRoom = await tx.room.update({
+            where: { id: input.roomId },
+            data: {
+              status: "ready_for_cleaning",
+              lastCheckoutAt: timestamp,
+              lastCheckoutSource: input.source,
+              updatedAt: timestamp,
+            },
+          });
+
+          return {
+            duplicate: false,
+            event,
+            room: updatedRoom,
+          };
+        } catch (error) {
+          if (error?.code !== "P2002") {
+            throw error;
+          }
+
+          const duplicateEvent = await tx.checkoutEvent.findUnique({
+            where: { occupancyCycleId: cycle.id },
+          });
+
+          if (!duplicateEvent) {
+            throw error;
+          }
+
+          return {
+            duplicate: true,
+            event: duplicateEvent,
+            room,
+          };
+        }
+      });
+
       return normalizeForRead(result);
     },
 

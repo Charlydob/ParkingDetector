@@ -9,6 +9,7 @@ import {
   getEventDetectedAt,
   getRecognizedLicensePlate,
 } from "./frigateClient.js";
+import { ensureRoomOccupiedCycle } from "./services/checkoutService.js";
 
 export function createEventProcessor({
   database,
@@ -182,6 +183,18 @@ export function createEventProcessor({
     );
   }
 
+  async function findRoomByNumber(checkInTenantId, roomNumber) {
+    const normalizedRoom = String(roomNumber ?? "").trim();
+
+    if (!normalizedRoom) {
+      return undefined;
+    }
+
+    return (await database.listTenantRecords("rooms", checkInTenantId)).find(
+      (room) => room.number === normalizedRoom && room.active !== false,
+    );
+  }
+
   async function clearAuthorizedEvidence(detection) {
     if (
       detection.parkingStatus !== "paid" ||
@@ -350,8 +363,10 @@ export function createEventProcessor({
 
     const reservations = await getReservations();
     const reservation = findReservationByCode(reservations, reservationCode);
+    const checkInTenantId = input.tenantId || tenantId;
+    const matchedRoom = await findRoomByNumber(checkInTenantId, reservation?.room || input.room);
     const checkIn = await database.createCheckIn({
-      tenantId: input.tenantId || tenantId,
+      tenantId: checkInTenantId,
       reservationCode,
       fullName: reservation?.name || fullName || "No name",
       checkInAt: input.checkInAt || now,
@@ -367,6 +382,28 @@ export function createEventProcessor({
       metadata: input.metadata,
       createdAt: now,
     });
+
+    if (matchedRoom) {
+      await ensureRoomOccupiedCycle(database, checkInTenantId, matchedRoom.id, {
+        reservationCode,
+        guestName: checkIn.fullName,
+        guestEmail: checkIn.guestEmail,
+        departureAt: reservation?.departureAt || input.departureAt,
+        metadata: {
+          source: input.source || "stripe",
+          checkInId: checkIn.id,
+          stripeEventId: input.stripeEventId,
+          stripePaymentIntentId: input.stripePaymentIntentId,
+          stripeCheckoutSessionId: input.stripeCheckoutSessionId,
+        },
+      });
+
+      await database.setRecord("rooms", matchedRoom.id, {
+        ...matchedRoom,
+        status: "occupied",
+        updatedAt: now,
+      });
+    }
 
     await database.updateStripeDiagnostic({
       lastEventReceivedAt: now,

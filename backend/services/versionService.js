@@ -8,8 +8,11 @@ export function shortVersion(value) {
 }
 
 export function getVersionPayload(env = process.env) {
+  const sha = cleanString(env.GIT_SHA || env.APP_VERSION) || "unknown";
+
   return {
-    version: shortVersion(env.GIT_SHA || env.APP_VERSION),
+    version: shortVersion(sha),
+    sha,
     environment: cleanString(env.NODE_ENV) || "development",
   };
 }
