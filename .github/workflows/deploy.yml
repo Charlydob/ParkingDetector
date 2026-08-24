@@ -104,8 +104,23 @@ jobs:
           ssh "$SSH_USER@$SSH_HOST" "DEPLOY_SHA='$DEPLOY_SHA' bash -s" <<'EOF'
             set -euo pipefail
 
-            BACKEND_SHA="$(curl --fail --silent --show-error http://127.0.0.1:3001/api/version | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{const p=JSON.parse(d);process.stdout.write(p.sha || p.version || '')})")"
-            FRONTEND_SHA="$(curl --fail --silent --show-error http://127.0.0.1:3000/version.json | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{const p=JSON.parse(d);process.stdout.write(p.sha || p.version || '')})")"
+            BACKEND_JSON="$(curl --fail --silent --show-error http://127.0.0.1:3001/api/version)"
+            FRONTEND_JSON="$(curl --fail --silent --show-error http://127.0.0.1:3000/version.json)"
+
+            BACKEND_SHA="$(printf '%s' "$BACKEND_JSON" | sed -n 's/.*"sha"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+            FRONTEND_SHA="$(printf '%s' "$FRONTEND_JSON" | sed -n 's/.*"sha"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+
+            if [ -z "$BACKEND_SHA" ]; then
+              echo "Backend SHA verification failed: could not extract sha from /api/version response"
+              echo "$BACKEND_JSON"
+              exit 1
+            fi
+
+            if [ -z "$FRONTEND_SHA" ]; then
+              echo "Frontend SHA verification failed: could not extract sha from /version.json response"
+              echo "$FRONTEND_JSON"
+              exit 1
+            fi
 
             if [ "$BACKEND_SHA" != "$DEPLOY_SHA" ]; then
               echo "Backend SHA mismatch: expected $DEPLOY_SHA but /api/version returned $BACKEND_SHA"
