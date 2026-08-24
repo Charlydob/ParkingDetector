@@ -1,13 +1,28 @@
 # Hetzner Deployment
 
-This deployment is fully self-hosted on one Hetzner server. GitHub is only the code repository.
+HotelApp supports two deployment modes:
 
-Production URLs:
+- Standalone installation: a new empty server where HotelApp creates its own PostgreSQL and public Caddy.
+- Existing Hetzner server: the real `charlydob.com` server, where Caddy, PostgreSQL, Frigate, n8n, and other services already exist.
 
-- App: `https://hotelapp.charlydob.com`
-- API: `https://hotelapp.charlydob.com/api/*`
+Production URL:
 
-## 1. Prepare Ubuntu
+```text
+https://hotelapp.charlydob.com
+```
+
+## Installation Standalone
+
+Use this mode only for an empty server dedicated to HotelApp.
+
+The default `docker-compose.yml` starts:
+
+- PostgreSQL 16 for HotelApp.
+- Backend on the internal Docker network.
+- Frontend served by Caddy on public `80/443`.
+- Caddy-managed HTTPS certificates.
+
+Prepare Ubuntu:
 
 ```bash
 sudo apt update
@@ -22,23 +37,7 @@ sudo usermod -aG docker "$USER"
 newgrp docker
 ```
 
-## 2. DNS
-
-Create an `A` record:
-
-```text
-hotelapp.charlydob.com -> YOUR_HETZNER_IPV4
-```
-
-Add an `AAAA` record too if the server has IPv6. Wait until:
-
-```bash
-dig +short hotelapp.charlydob.com
-```
-
-returns the server IP.
-
-## 3. Clone And Configure
+Clone and configure:
 
 ```bash
 git clone https://github.com/YOUR_ORG/ParkingDetector.git HotelApp
@@ -47,7 +46,7 @@ cp .env.example .env
 nano .env
 ```
 
-Required changes:
+Required values:
 
 ```env
 APP_DOMAIN=hotelapp.charlydob.com
@@ -59,9 +58,7 @@ BOOTSTRAP_ADMIN_EMAIL=owner@example.com
 BOOTSTRAP_ADMIN_PASSWORD=replace-with-a-long-initial-password
 ```
 
-Do not commit `.env`.
-
-## 4. Start
+Start:
 
 ```bash
 docker compose up -d --build
@@ -69,14 +66,106 @@ docker compose ps
 docker compose logs -f backend
 ```
 
-Caddy obtains TLS automatically. Check:
+Database migrations run on backend startup with `prisma migrate deploy`.
+
+## Existing Hetzner Server
+
+Use this mode for the real Hetzner server that already runs the shared stack.
+
+This mode uses:
+
+- Host Caddy already installed on the server for public HTTPS.
+- Existing PostgreSQL 16 container.
+- Existing Docker network `charly-stack_default`.
+- Existing Frigate container reachable as `http://frigate:5000`.
+
+This mode does not start:
+
+- A new PostgreSQL container.
+- A public Caddy container on `80/443`.
+- A new Frigate container.
+- n8n, Bookshell, or any other existing service.
+
+The HotelApp containers are attached to the external Docker network:
+
+```text
+charly-stack_default
+```
+
+Backend resolves PostgreSQL as:
+
+```text
+postgres:5432
+```
+
+Backend resolves Frigate as:
+
+```text
+http://frigate:5000
+```
+
+Clone and configure:
+
+```bash
+git clone https://github.com/YOUR_ORG/ParkingDetector.git HotelApp
+cd HotelApp
+cp .env.hetzner.example .env
+nano .env
+```
+
+Required values:
+
+```env
+DATABASE_URL=postgresql://hotelapp_app:replace-with-real-password@postgres:5432/hotelapp?schema=public
+SESSION_SECRET=replace-with-a-long-random-secret
+BOOTSTRAP_ADMIN_EMAIL=owner@example.com
+BOOTSTRAP_ADMIN_PASSWORD=replace-with-a-long-initial-password
+APP_DOMAIN=hotelapp.charlydob.com
+APP_ORIGIN=https://hotelapp.charlydob.com
+FRIGATE_BASE_URL=http://frigate:5000
+```
+
+Do not include real secrets in Git.
+
+Start HotelApp only:
+
+```bash
+docker compose -f docker-compose.hetzner.yml up -d --build
+docker compose -f docker-compose.hetzner.yml ps
+docker compose -f docker-compose.hetzner.yml logs backend
+```
+
+The Hetzner compose publishes only localhost ports:
+
+```text
+backend  -> 127.0.0.1:3001
+frontend -> 127.0.0.1:3000
+```
+
+Configure the host Caddy to terminate HTTPS and proxy:
+
+```caddyfile
+hotelapp.charlydob.com {
+	handle /api/* {
+		reverse_proxy 127.0.0.1:3001
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+}
+```
+
+The frontend container serves the Vite build over plain HTTP on port `80` inside the container and keeps SPA fallback to `index.html`.
+
+Verify:
 
 ```bash
 curl -I https://hotelapp.charlydob.com
 curl https://hotelapp.charlydob.com/api/health
 ```
 
-## 5. First Admin
+## First Admin
 
 On first backend start, if no `platform_admin` exists, the backend creates one from:
 
@@ -93,7 +182,7 @@ Login at:
 https://hotelapp.charlydob.com/login
 ```
 
-## 6. Tenants And Users
+## Tenants And Users
 
 As `platform_admin`:
 
@@ -111,27 +200,28 @@ admin creates invite -> /accept-invite/:token -> user sets password -> backend c
 
 There is no public signup.
 
-## 7. External Frigate
+## Frigate
 
-Frigate is optional per tenant. Do not assume localhost.
+Frigate configuration is per tenant and tenant settings are the source of truth.
 
-For a tenant, set:
-
-- enabled
-- base URL reachable from the HotelApp backend
-- credentials if the external proxy requires them
-- camera names
-
-Examples:
+For the existing Hetzner server, use this internal URL when configuring the tenant:
 
 ```text
-https://frigate.your-hetzner-domain.example
+http://frigate:5000
+```
+
+For standalone or external installations, use a URL reachable from the HotelApp backend, for example:
+
+```text
+https://frigate.your-domain.example
 http://192.168.1.50:5000
 ```
 
 If Frigate is on a hotel NAS, expose it through a secure VPN, private network, or authenticated HTTPS reverse proxy.
 
-## 8. Update App
+## Update
+
+Standalone:
 
 ```bash
 cd HotelApp
@@ -140,64 +230,37 @@ docker compose up -d --build
 docker compose ps
 ```
 
+Existing Hetzner server:
+
+```bash
+cd HotelApp
+git pull
+docker compose -f docker-compose.hetzner.yml up -d --build
+docker compose -f docker-compose.hetzner.yml ps
+```
+
 Database migrations run on backend startup with `prisma migrate deploy`.
 
-## 9. Backup
+## Backup
 
-Create a backup directory:
+For standalone installations, back up the PostgreSQL and HotelApp volumes:
 
 ```bash
 mkdir -p backups/$(date +%F)
-```
-
-PostgreSQL dump:
-
-```bash
 docker compose exec -T postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > backups/$(date +%F)/hotelapp.sql
-```
-
-Volumes:
-
-```bash
 docker run --rm -v hotelapp_postgres-data:/volume -v "$PWD/backups/$(date +%F)":/backup alpine tar czf /backup/postgres-data.tgz -C /volume .
 docker run --rm -v hotelapp_app-data:/volume -v "$PWD/backups/$(date +%F)":/backup alpine tar czf /backup/app-data.tgz -C /volume .
 docker run --rm -v hotelapp_app-evidence:/volume -v "$PWD/backups/$(date +%F)":/backup alpine tar czf /backup/app-evidence.tgz -C /volume .
 cp .env backups/$(date +%F)/env
 ```
 
+For the existing Hetzner server, PostgreSQL is owned by the shared stack. Back up only HotelApp file volumes from this repo:
+
+```bash
+mkdir -p backups/$(date +%F)
+docker run --rm -v hotelapp_app-data:/volume -v "$PWD/backups/$(date +%F)":/backup alpine tar czf /backup/app-data.tgz -C /volume .
+docker run --rm -v hotelapp_app-evidence:/volume -v "$PWD/backups/$(date +%F)":/backup alpine tar czf /backup/app-evidence.tgz -C /volume .
+cp .env backups/$(date +%F)/env
+```
+
 Store backups off-server. Keep `.env` and secrets out of GitHub.
-
-## 10. Restore To New Hetzner
-
-On the new server, install Docker, clone the repo, copy `.env`, and copy backup files into the repo directory.
-
-Start Postgres only:
-
-```bash
-docker compose up -d postgres
-```
-
-Restore SQL dump:
-
-```bash
-cat backups/YYYY-MM-DD/hotelapp.sql | docker compose exec -T postgres psql -U "$POSTGRES_USER" "$POSTGRES_DB"
-```
-
-Restore file volumes if needed:
-
-```bash
-docker run --rm -v hotelapp_app-data:/volume -v "$PWD/backups/YYYY-MM-DD":/backup alpine sh -c "cd /volume && tar xzf /backup/app-data.tgz"
-docker run --rm -v hotelapp_app-evidence:/volume -v "$PWD/backups/YYYY-MM-DD":/backup alpine sh -c "cd /volume && tar xzf /backup/app-evidence.tgz"
-```
-
-Start everything:
-
-```bash
-docker compose up -d --build
-```
-
-Point DNS to the new server IP and verify:
-
-```bash
-curl https://hotelapp.charlydob.com/api/health
-```
