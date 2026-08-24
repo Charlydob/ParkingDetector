@@ -1,5 +1,5 @@
 import argon2 from "argon2";
-import { parseCookie, stringifyCookie } from "cookie";
+import { parseCookie, stringifySetCookie } from "cookie";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { getAuthSession } from "./tenantService.js";
 
@@ -8,7 +8,11 @@ function parse(value) {
 }
 
 function serialize(name, value, options) {
-  return stringifyCookie({ [name]: value }, options);
+  return stringifySetCookie({
+    name,
+    value,
+    ...options,
+  });
 }
 const SESSION_COOKIE = process.env.SESSION_COOKIE_NAME || "hotelapp_session";
 const SESSION_TTL_DAYS = Number(process.env.SESSION_TTL_DAYS || 14);
