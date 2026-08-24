@@ -49,6 +49,7 @@ const DATE_FIELDS = new Set([
   "openedAt",
   "consumedAt",
   "departureAt",
+  "deletedAt",
 ]);
 
 const JSON_FIELDS = new Set([
@@ -241,7 +242,12 @@ function lifecycleError(message, statusCode, code) {
 }
 
 async function lockOccupancyCycle(tx, tenantId, roomId) {
-  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`occupancy:${tenantId}:${roomId}`}))`;
+  await tx.$queryRaw`
+    WITH lock AS (
+      SELECT pg_advisory_xact_lock(hashtext(${`occupancy:${tenantId}:${roomId}`}))
+    )
+    SELECT 1::int AS locked FROM lock
+  `;
 }
 
 function occupancyPatch(input = {}) {
@@ -427,7 +433,7 @@ export function createDatabaseClient() {
         await lockOccupancyCycle(tx, input.tenantId, input.roomId);
 
         const room = await tx.room.findUnique({ where: { id: input.roomId } });
-        if (!room || room.tenantId !== input.tenantId || room.active === false) {
+        if (!room || room.tenantId !== input.tenantId || room.active === false || room.deletedAt) {
           throw lifecycleError("Room not found.", 404, "ROOM_NOT_FOUND");
         }
 

@@ -1,9 +1,11 @@
 import QRCode from "qrcode";
 import {
+  archiveRoom,
   createKeyIdentifier,
   createRoom,
   createKeyIdentifiersBulk,
   createRoomsBulk,
+  deleteKeyIdentifier,
   listCheckoutOverview,
   listKeyIdentifiers,
   registerCheckout,
@@ -31,7 +33,7 @@ async function withQrPayload(request, key) {
   return {
     ...key,
     checkoutUrl,
-    qrDataUrl: await QRCode.toDataURL(checkoutUrl),
+    qrDataUrl: await QRCode.toDataURL(checkoutUrl, { errorCorrectionLevel: "H", margin: 4 }),
   };
 }
 
@@ -49,7 +51,7 @@ export async function handleCheckoutRoute({ request, pathname, parsedUrl, body, 
       payload: {
         ...overview,
         publicUrl,
-        publicQrDataUrl: await QRCode.toDataURL(publicUrl),
+        publicQrDataUrl: await QRCode.toDataURL(publicUrl, { errorCorrectionLevel: "H", margin: 4 }),
       },
     };
   }
@@ -82,6 +84,14 @@ export async function handleCheckoutRoute({ request, pathname, parsedUrl, body, 
     return {
       status: 200,
       payload: await updateRoom(database, tenantId, decodeURIComponent(roomMatch[1]), body),
+    };
+  }
+
+  if (request.method === "DELETE" && roomMatch) {
+    requireTenantAdmin(session, tenantId);
+    return {
+      status: 200,
+      payload: await archiveRoom(database, tenantId, decodeURIComponent(roomMatch[1])),
     };
   }
 
@@ -123,6 +133,14 @@ export async function handleCheckoutRoute({ request, pathname, parsedUrl, body, 
     };
   }
 
+  if (request.method === "DELETE" && keyMatch) {
+    requireTenantAdmin(session, tenantId);
+    return {
+      status: 200,
+      payload: await deleteKeyIdentifier(database, tenantId, decodeURIComponent(keyMatch[1])),
+    };
+  }
+
   const keyQrMatch = pathname.match(/^\/api\/checkout\/keys\/([^/]+)\/qr$/);
   if (request.method === "GET" && keyQrMatch) {
     const key = await database.getTenantRecord(
@@ -141,7 +159,10 @@ export async function handleCheckoutRoute({ request, pathname, parsedUrl, body, 
       status: 200,
       payload: {
         checkoutUrl: keyCheckoutUrl(request, key),
-        qrDataUrl: await QRCode.toDataURL(keyCheckoutUrl(request, key)),
+        qrDataUrl: await QRCode.toDataURL(keyCheckoutUrl(request, key), {
+          errorCorrectionLevel: "H",
+          margin: 4,
+        }),
       },
     };
   }

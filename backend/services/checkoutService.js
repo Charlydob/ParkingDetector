@@ -63,6 +63,10 @@ function checkoutError(message, statusCode, code) {
   return error;
 }
 
+function isRoomAvailable(room) {
+  return Boolean(room) && room.active !== false && !room.deletedAt;
+}
+
 export function createCheckoutAttemptToken({
   tenantId,
   roomId,
@@ -168,7 +172,7 @@ export async function listCheckoutOverview(database, tenantId) {
 
   return {
     rooms: rooms
-      .filter((room) => room.active !== false)
+      .filter(isRoomAvailable)
       .sort((left, right) => String(left.number).localeCompare(String(right.number))),
     events: events
       .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
@@ -259,6 +263,17 @@ export async function createRoom(database, tenantId, input) {
     throw error;
   }
 
+  const existing = (await database.listTenantRecords("rooms", tenantId)).find(
+    (room) => room.number === number && !room.deletedAt,
+  );
+
+  if (existing) {
+    const error = new Error("Room number already exists.");
+    error.statusCode = 409;
+    error.code = "ROOM_EXISTS";
+    throw error;
+  }
+
   const room = {
     id: randomUUID(),
     tenantId,
@@ -292,7 +307,9 @@ export async function createRoomsBulk(database, tenantId, input = {}) {
   }
 
   const existingNumbers = new Map(
-    (await database.listTenantRecords("rooms", tenantId)).map((room) => [room.number, room]),
+    (await database.listTenantRecords("rooms", tenantId))
+      .filter((room) => !room.deletedAt)
+      .map((room) => [room.number, room]),
   );
   const created = [];
   const skippedExisting = [];
@@ -343,7 +360,7 @@ export async function createRoomsBulk(database, tenantId, input = {}) {
 export async function updateRoom(database, tenantId, roomId, patch) {
   const current = await database.getTenantRecord("rooms", tenantId, roomId);
 
-  if (!current) {
+  if (!current || current.deletedAt) {
     const error = new Error("Room not found.");
     error.statusCode = 404;
     throw error;
@@ -382,7 +399,7 @@ export async function listKeyIdentifiers(database, tenantId) {
 export async function createKeyIdentifier(database, tenantId, input) {
   const room = await database.getTenantRecord("rooms", tenantId, cleanString(input.roomId));
 
-  if (!room) {
+  if (!isRoomAvailable(room)) {
     const error = new Error("Room not found.");
     error.statusCode = 404;
     throw error;
@@ -407,7 +424,7 @@ export async function createKeyIdentifier(database, tenantId, input) {
 
 export async function createKeyIdentifiersBulk(database, tenantId, input = {}) {
   const rooms = (await database.listTenantRecords("rooms", tenantId))
-    .filter((room) => room.active !== false)
+    .filter(isRoomAvailable)
     .sort((left, right) => String(left.number).localeCompare(String(right.number)));
   const keys = await database.listTenantRecords("keyIdentifiers", tenantId);
   const activeQrKeysByRoom = new Map();
@@ -496,7 +513,7 @@ export async function updateKeyIdentifier(database, tenantId, keyId, patch) {
     updatedAt: now(),
   };
 
-  if (!(await database.getTenantRecord("rooms", tenantId, key.roomId))) {
+  if (!isRoomAvailable(await database.getTenantRecord("rooms", tenantId, key.roomId))) {
     const error = new Error("Room not found.");
     error.statusCode = 404;
     throw error;
@@ -504,6 +521,64 @@ export async function updateKeyIdentifier(database, tenantId, keyId, patch) {
 
   await database.setRecord("keyIdentifiers", keyId, key);
   return key;
+}
+
+export async function deleteKeyIdentifier(database, tenantId, keyId) {
+  const current = await database.getTenantRecord("keyIdentifiers", tenantId, keyId);
+
+  if (!current) {
+    const error = new Error("Key identifier not found.");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  if (database.deleteRecord) {
+    await database.deleteRecord("keyIdentifiers", keyId);
+  } else {
+    await database.setRecord("keyIdentifiers", keyId, {
+      ...current,
+      active: false,
+      deletedAt: now(),
+      updatedAt: now(),
+    });
+  }
+
+  return { success: true, deletedId: keyId };
+}
+
+export async function archiveRoom(database, tenantId, roomId) {
+  const current = await database.getTenantRecord("rooms", tenantId, roomId);
+
+  if (!current || current.deletedAt) {
+    const error = new Error("Room not found.");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const timestamp = now();
+  const archivedRoom = {
+    ...current,
+    active: false,
+    status: "unknown",
+    deletedAt: timestamp,
+    updatedAt: timestamp,
+  };
+  const keys = (await database.listTenantRecords("keyIdentifiers", tenantId)).filter(
+    (key) => key.roomId === roomId && key.active !== false,
+  );
+
+  await database.setRecord("rooms", roomId, archivedRoom);
+  await Promise.all(
+    keys.map((key) =>
+      database.setRecord("keyIdentifiers", key.id, {
+        ...key,
+        active: false,
+        updatedAt: timestamp,
+      }),
+    ),
+  );
+
+  return { success: true, room: archivedRoom, deactivatedKeys: keys.length };
 }
 
 export async function registerCheckout(database, tenantId, roomId, source, options = {}) {
@@ -516,7 +591,7 @@ export async function registerCheckout(database, tenantId, roomId, source, optio
   const sourceIdentifier = cleanString(options.sourceIdentifier);
   const room = await database.getTenantRecord("rooms", tenantId, roomId);
 
-  if (!room || room.active === false) {
+  if (!isRoomAvailable(room)) {
     const error = new Error("Room not found.");
     error.statusCode = 404;
     throw error;
@@ -678,7 +753,7 @@ export async function resolveCheckoutByIdentifier(database, identifier, type = "
     throw error;
   }
 
-  if (!room || room.active === false) {
+  if (!isRoomAvailable(room)) {
     const error = new Error("Room is not available for checkout.");
     error.statusCode = 404;
     error.code = "ROOM_UNAVAILABLE";

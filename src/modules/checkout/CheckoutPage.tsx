@@ -1,10 +1,12 @@
-import { Download, KeyRound, Plus, Printer, QrCode, RefreshCw } from "lucide-react";
+import { Download, KeyRound, Plus, Printer, QrCode, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   createCheckoutKey,
   createCheckoutKeysBulk,
   createRoom,
   createRoomsBulk,
+  deleteCheckoutKey,
+  deleteRoom,
   getCheckoutKeys,
   getCheckoutOverview,
   manualCheckout,
@@ -18,6 +20,8 @@ const ALL_ROOMS = "__all__";
 type QrTextMode = "none" | "label" | "room" | "label-room";
 
 interface QrPreview {
+  keyId?: string;
+  roomId?: string;
   label: string;
   roomNumber?: string;
   dataUrl: string;
@@ -51,23 +55,26 @@ function slug(value: string) {
   return value.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase();
 }
 
-function qrCaption(mode: QrTextMode, label: string, roomNumber?: string) {
+function qrBadgeLines(mode: QrTextMode, label: string, roomNumber?: string) {
   const cleanLabel = label.trim();
   const cleanRoom = roomNumber?.trim();
 
   if (mode === "label" && cleanLabel) {
-    return cleanLabel;
+    return [{ text: cleanLabel.toUpperCase(), size: 54, weight: 800 }];
   }
 
   if (mode === "room" && cleanRoom) {
-    return `Room ${cleanRoom}`;
+    return [{ text: `ROOM ${cleanRoom}`.toUpperCase(), size: 50, weight: 800 }];
   }
 
   if (mode === "label-room") {
-    return [cleanLabel, cleanRoom ? `Room ${cleanRoom}` : ""].filter(Boolean).join(" ");
+    return [
+      cleanLabel ? { text: cleanLabel.toUpperCase(), size: 48, weight: 800 } : undefined,
+      cleanRoom ? { text: `ROOM ${cleanRoom}`.toUpperCase(), size: 34, weight: 700 } : undefined,
+    ].filter(Boolean) as Array<{ text: string; size: number; weight: number }>;
   }
 
-  return "";
+  return [];
 }
 
 function qrFilename(label: string, roomNumber?: string) {
@@ -97,19 +104,17 @@ async function printableQrDataUrl({
   roomNumber?: string;
   textMode: QrTextMode;
 }) {
-  const caption = qrCaption(textMode, label, roomNumber);
+  const lines = qrBadgeLines(textMode, label, roomNumber);
 
-  if (!caption) {
+  if (lines.length === 0) {
     return qrDataUrl;
   }
 
   const qrImage = await loadImage(qrDataUrl);
   const canvas = document.createElement("canvas");
-  const qrSize = 620;
-  const padding = 70;
-  const captionHeight = 110;
-  canvas.width = qrSize + padding * 2;
-  canvas.height = qrSize + padding * 2 + captionHeight;
+  const qrSize = 760;
+  canvas.width = qrSize;
+  canvas.height = qrSize;
 
   const context = canvas.getContext("2d");
   if (!context) {
@@ -118,20 +123,55 @@ async function printableQrDataUrl({
 
   context.fillStyle = "#ffffff";
   context.fillRect(0, 0, canvas.width, canvas.height);
-  context.drawImage(qrImage, padding, padding, qrSize, qrSize);
+  context.drawImage(qrImage, 0, 0, qrSize, qrSize);
+
+  const maxBadgeWidth = qrSize * 0.42;
+  const horizontalPadding = 34;
+  const verticalPadding = 24;
+  const gap = lines.length > 1 ? 10 : 0;
+  const measured = lines.map((line) => {
+    let size = line.size;
+    context.font = `${line.weight} ${size}px Arial, sans-serif`;
+    while (context.measureText(line.text).width > maxBadgeWidth - horizontalPadding * 2 && size > 22) {
+      size -= 2;
+      context.font = `${line.weight} ${size}px Arial, sans-serif`;
+    }
+    return { ...line, size, width: context.measureText(line.text).width };
+  });
+  const badgeWidth = Math.min(
+    maxBadgeWidth,
+    Math.max(210, Math.max(...measured.map((line) => line.width)) + horizontalPadding * 2),
+  );
+  const lineHeights = measured.map((line) => line.size * 1.05);
+  const badgeHeight =
+    lineHeights.reduce((total, height) => total + height, 0) + gap * (lines.length - 1) + verticalPadding * 2;
+  const badgeX = (qrSize - badgeWidth) / 2;
+  const badgeY = (qrSize - badgeHeight) / 2;
+
+  context.shadowColor = "rgba(17, 24, 39, 0.18)";
+  context.shadowBlur = 8;
+  context.shadowOffsetY = 2;
+  context.fillStyle = "#ffffff";
+  context.beginPath();
+  context.roundRect(badgeX, badgeY, badgeWidth, badgeHeight, 18);
+  context.fill();
+  context.shadowColor = "transparent";
+  context.strokeStyle = "#e5e7eb";
+  context.lineWidth = 3;
+  context.stroke();
+
   context.fillStyle = "#111827";
-  context.font = "700 44px Arial, sans-serif";
   context.textAlign = "center";
   context.textBaseline = "middle";
 
-  const maxWidth = canvas.width - padding * 2;
-  let fontSize = 44;
-  while (context.measureText(caption).width > maxWidth && fontSize > 24) {
-    fontSize -= 2;
-    context.font = `700 ${fontSize}px Arial, sans-serif`;
+  let y = badgeY + verticalPadding;
+  for (const [index, line] of measured.entries()) {
+    context.font = `${line.weight} ${line.size}px Arial, sans-serif`;
+    y += lineHeights[index] / 2;
+    context.fillText(line.text, qrSize / 2, y);
+    y += lineHeights[index] / 2 + gap;
   }
 
-  context.fillText(caption, canvas.width / 2, qrSize + padding + captionHeight / 2);
   return canvas.toDataURL("image/png");
 }
 
@@ -147,7 +187,7 @@ export function CheckoutPage() {
   const [selectedRoomId, setSelectedRoomId] = useState("");
   const [keyLabel, setKeyLabel] = useState("");
   const [regenerateExisting, setRegenerateExisting] = useState(false);
-  const [qrTextMode, setQrTextMode] = useState<QrTextMode>("none");
+  const [qrTextMode, setQrTextMode] = useState<QrTextMode>("label-room");
   const [qrPreview, setQrPreview] = useState<QrPreview>();
   const [qrGallery, setQrGallery] = useState<QrPreview[]>([]);
   const [notice, setNotice] = useState("");
@@ -186,6 +226,8 @@ export function CheckoutPage() {
     });
 
     return {
+      keyId: key.id,
+      roomId: key.roomId,
       label: key.label,
       roomNumber: room?.number,
       dataUrl,
@@ -235,6 +277,23 @@ export function CheckoutPage() {
     await reload();
   }
 
+  async function removeRoom(room: Room) {
+    if (
+      !window.confirm(
+        `Delete Room ${room.number}?\nIts QR codes will stop working. Historical checkout records will be preserved.`,
+      )
+    ) {
+      return;
+    }
+
+    await deleteRoom(room.id);
+    setQrGallery((current) => current.filter((item) => item.roomId !== room.id));
+    setQrPreview((current) => (current?.roomId === room.id ? undefined : current));
+    setSelectedRoomId((current) => (current === room.id ? "" : current));
+    setNotice(`Room ${room.number} deleted.`);
+    await reload();
+  }
+
   async function createKey() {
     if (selectedRoomId === ALL_ROOMS) {
       const result = await createCheckoutKeysBulk({ label: keyLabel, regenerateExisting });
@@ -274,6 +333,20 @@ export function CheckoutPage() {
 
   async function toggleKey(key: KeyIdentifier) {
     await updateCheckoutKey(key.id, { active: !key.active });
+    await reload();
+  }
+
+  async function removeKey(key: KeyIdentifier, room?: Room) {
+    const roomLabel = room?.number || "-";
+    if (!window.confirm(`Delete QR for Room ${roomLabel}?\nThe printed QR will stop working.`)) {
+      return;
+    }
+
+    await deleteCheckoutKey(key.id);
+    setKeys((current) => current.filter((item) => item.id !== key.id));
+    setQrGallery((current) => current.filter((item) => item.keyId !== key.id));
+    setQrPreview((current) => (current?.keyId === key.id ? undefined : current));
+    setNotice(`QR for Room ${roomLabel} deleted.`);
     await reload();
   }
 
@@ -454,6 +527,10 @@ export function CheckoutPage() {
                     <button type="button" onClick={() => deactivateRoom(room)}>
                       Deactivate
                     </button>
+                    <button type="button" onClick={() => removeRoom(room)}>
+                      <Trash2 size={14} />
+                      Delete room
+                    </button>
                   </div>
                 ))}
               </div>
@@ -521,6 +598,10 @@ export function CheckoutPage() {
                       </button>
                       <button type="button" onClick={() => toggleKey(key)}>
                         {key.active ? "Deactivate" : "Activate"}
+                      </button>
+                      <button type="button" onClick={() => removeKey(key, room)}>
+                        <Trash2 size={14} />
+                        Delete
                       </button>
                     </div>
                   );

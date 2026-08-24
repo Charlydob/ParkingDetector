@@ -74,7 +74,7 @@ export function PublicCheckoutPage() {
     }
 
     setState("error");
-    setMessage(error instanceof Error ? error.message : t(locale, "checkoutUnavailable"));
+    setMessage(t(locale, "checkoutUnavailable"));
   }
 
   async function resolveToken(token: string) {

@@ -722,6 +722,16 @@ export async function updateRoom(roomId: string, input: Partial<Room>): Promise<
   });
 }
 
+export async function deleteRoom(roomId: string): Promise<{
+  success: boolean;
+  room: Room;
+  deactivatedKeys: number;
+}> {
+  return requestJson(`/api/checkout/rooms/${encodeURIComponent(roomId)}`, {
+    method: "DELETE",
+  });
+}
+
 export async function createCheckoutKey(input: {
   roomId: string;
   label?: string;
@@ -760,6 +770,12 @@ export async function updateCheckoutKey(
   return requestJson(`/api/checkout/keys/${encodeURIComponent(keyId)}`, {
     method: "PATCH",
     body: JSON.stringify(input),
+  });
+}
+
+export async function deleteCheckoutKey(keyId: string): Promise<{ success: boolean; deletedId: string }> {
+  return requestJson(`/api/checkout/keys/${encodeURIComponent(keyId)}`, {
+    method: "DELETE",
   });
 }
 

@@ -3,12 +3,14 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createEventProcessor } from "../eventProcessor.js";
 import {
+  archiveRoom,
   createKeyIdentifier,
   createKeyIdentifiersBulk,
   createRoom,
   createRoomsBulk,
   checkoutIdentifierFromValue,
   createCheckoutAttemptToken,
+  deleteKeyIdentifier,
   ensureRoomOccupiedCycle,
   listCheckoutOverview,
   registerCheckout,
@@ -191,6 +193,9 @@ function createFakeDatabase(initial = {}) {
     },
     async listRecords(collection) {
       return Object.values(data[collection]);
+    },
+    async deleteRecord(collection, id) {
+      delete data[collection][id];
     },
     listTenantRecords,
     getTenantRecord,
@@ -922,6 +927,70 @@ test("deactivated QR is rejected distinctly", async () => {
   const room = await createRoom(database, "hotelA", { number: "109" });
   const key = await createKeyIdentifier(database, "hotelA", { roomId: room.id });
   await updateKeyIdentifier(database, "hotelA", key.id, { active: false });
+
+  await assert.rejects(
+    () => resolveCheckoutByIdentifier(database, key.identifier, "qr"),
+    (error) => {
+      assert.equal(error.statusCode, 410);
+      assert.equal(error.code, "QR_DEACTIVATED");
+      return true;
+    },
+  );
+});
+
+test("deleted QR is removed and no longer resolves", async () => {
+  const database = createFakeDatabase({
+    tenants: {
+      hotelA: { id: "hotelA", name: "Hotel A", slug: "hotel-a", active: true },
+    },
+    tenantModules: {
+      hotelA: { checkout: { moduleId: "checkout", enabled: true } },
+    },
+  });
+  const room = await createRoom(database, "hotelA", { number: "201" });
+  const key = await createKeyIdentifier(database, "hotelA", { roomId: room.id });
+
+  await deleteKeyIdentifier(database, "hotelA", key.id);
+
+  assert.equal(database.data.rooms[room.id].number, "201");
+  assert.equal(Object.values(database.data.keyIdentifiers).length, 0);
+  await assert.rejects(
+    () => resolveCheckoutByIdentifier(database, key.identifier, "qr"),
+    (error) => {
+      assert.equal(error.statusCode, 404);
+      assert.equal(error.code, "QR_INVALID");
+      return true;
+    },
+  );
+});
+
+test("deleted room is archived, keeps history, deactivates keys, and can be recreated", async () => {
+  const database = createFakeDatabase({
+    tenants: {
+      hotelA: { id: "hotelA", name: "Hotel A", slug: "hotel-a", active: true },
+    },
+    tenantModules: {
+      hotelA: { checkout: { moduleId: "checkout", enabled: true } },
+    },
+  });
+  const room = await createRoom(database, "hotelA", { number: "201", status: "occupied" });
+  const key = await createKeyIdentifier(database, "hotelA", { roomId: room.id });
+  const target = await resolveCheckoutByIdentifier(database, key.identifier, "qr");
+  await registerCheckoutByIdentifier(database, key.identifier, "qr", {
+    attemptToken: target.attemptToken,
+  });
+
+  const deletion = await archiveRoom(database, "hotelA", room.id);
+
+  assert.equal(deletion.success, true);
+  assert.equal(database.data.rooms[room.id].active, false);
+  assert.ok(database.data.rooms[room.id].deletedAt);
+  assert.equal(database.data.keyIdentifiers[key.id].active, false);
+  assert.equal(Object.values(database.data.checkoutEvents).length, 1);
+
+  const recreated = await createRoom(database, "hotelA", { number: "201" });
+  assert.notEqual(recreated.id, room.id);
+  assert.equal(recreated.number, "201");
 
   await assert.rejects(
     () => resolveCheckoutByIdentifier(database, key.identifier, "qr"),

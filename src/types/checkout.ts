@@ -18,6 +18,7 @@ export interface Room {
   status: RoomStatus;
   createdAt: string;
   updatedAt: string;
+  deletedAt?: string;
   lastCheckoutAt?: string;
   lastCheckoutSource?: CheckoutSource;
 }

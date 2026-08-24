@@ -379,6 +379,29 @@ function logUnexpectedError(scope, error) {
   }
 }
 
+function publicCheckoutErrorPayload(error) {
+  const statusCode = error?.statusCode && error.statusCode < 500 ? error.statusCode : 503;
+  const code =
+    error?.code && statusCode < 500 ? error.code : "CHECKOUT_TEMPORARILY_UNAVAILABLE";
+  const knownMessages = {
+    QR_INVALID: "This checkout QR is not valid.",
+    QR_DEACTIVATED: "This checkout QR is no longer active.",
+    CHECKOUT_ATTEMPT_INVALID: "This checkout page is no longer valid.",
+    CHECKOUT_ATTEMPT_EXPIRED: "This checkout page is no longer valid.",
+    STALE_CHECKOUT_ATTEMPT: "This checkout page is no longer valid.",
+    CHECKOUT_ALREADY_RECEIVED: "Checkout has already been received for this stay.",
+    RATE_LIMITED: "Too many checkout attempts. Please wait a moment.",
+  };
+
+  return {
+    statusCode,
+    payload: {
+      error: knownMessages[code] || "Checkout is temporarily unavailable. Please try again.",
+      code,
+    },
+  };
+}
+
 try {
   await forceRefreshReservations();
 } catch {
@@ -453,12 +476,22 @@ const server = createServer(async (request, response) => {
     }
 
     if (pathname.startsWith("/api/public/")) {
-      const result = await handlePublicCheckoutRoute({
-        request,
-        pathname,
-        body: request.method === "GET" ? {} : await readJsonBody(request),
-        context: { database, publicCheckoutLimiter },
-      });
+      let result;
+
+      try {
+        result = await handlePublicCheckoutRoute({
+          request,
+          pathname,
+          body: request.method === "GET" ? {} : await readJsonBody(request),
+          context: { database, publicCheckoutLimiter },
+        });
+      } catch (error) {
+        console.error("[PublicCheckout] Internal error");
+        console.error(error?.stack || error);
+        const publicError = publicCheckoutErrorPayload(error);
+        sendJson(response, publicError.statusCode, publicError.payload);
+        return;
+      }
 
       if (sendRouteResult(response, result)) {
         return;
