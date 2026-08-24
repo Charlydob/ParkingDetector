@@ -6,6 +6,8 @@ import {
   disconnectJsonFeed,
   disconnectReservationWebhook,
   disconnectStripe,
+  disconnectTelegram,
+  generateTelegramPairingCode,
   getIntegrationSettings,
   previewReservationSource,
   saveFrigate,
@@ -14,7 +16,6 @@ import {
   saveReservationWebhook,
   saveReservationMapping,
   saveStripe,
-  saveNotifications,
   testReservationMapping,
   testFrigate,
   testBackendConnection,
@@ -127,9 +128,14 @@ export function SettingsIntegrations({
   const [mappingPreview, setMappingPreview] = useState<ReservationSourcePreview | undefined>();
   const [stripeSecretKey, setStripeSecretKey] = useState("");
   const [stripeWebhookSecret, setStripeWebhookSecret] = useState("");
-  const [telegramEnabled, setTelegramEnabled] = useState(false);
-  const [telegramChatId, setTelegramChatId] = useState("");
-  const [telegramBotToken, setTelegramBotToken] = useState("");
+  const [telegramPairing, setTelegramPairing] = useState<
+    | {
+        code: string;
+        expiresAt: string;
+        tenant: { id: string; name: string; slug: string };
+      }
+    | undefined
+  >();
   const [frigateBaseUrl, setFrigateBaseUrl] = useState("");
   const [frigatePollIntervalMs, setFrigatePollIntervalMs] = useState(5000);
   const [frigateCameras, setFrigateCameras] = useState("");
@@ -210,9 +216,6 @@ export function SettingsIntegrations({
     );
     setFrigateCameras((settings.frigate.cameras || []).join("\n"));
     setMapping(settings.reservations.mapping);
-    setTelegramEnabled(Boolean(settings.notifications?.telegram.enabled));
-    setTelegramChatId(settings.notifications?.telegram.chatId || "");
-    setTelegramBotToken("");
   }, [settings, backendStatus]);
 
   async function run(label: string, action: () => Promise<unknown>, success: string) {
@@ -356,6 +359,9 @@ export function SettingsIntegrations({
     sourcePreview?.detectedFields ||
     settings?.reservations.sourceDiagnostics?.detectedFields ||
     [];
+  const telegramSettings = settings?.notifications?.telegram;
+  const telegramConnected = Boolean(telegramSettings?.enabled && telegramSettings.chatId);
+  const telegramConnectCommand = telegramPairing ? `/connect ${telegramPairing.code}` : "";
 
   return (
     <section className="settings-page">
@@ -972,62 +978,80 @@ export function SettingsIntegrations({
 
         <section className="panel integration-card">
           <div className="section-heading">
-            <h2>Telegram</h2>
-            <span>{settings?.notifications?.telegram.enabled ? "Enabled" : "Disabled"}</span>
+            <h2>Conectar Telegram</h2>
+            <span>{telegramConnected ? "Telegram conectado" : "Desconectado"}</span>
           </div>
           <div className="settings-form">
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={telegramEnabled}
-                onChange={(event) => setTelegramEnabled(event.target.checked)}
-              />
-              <span>Send checkout notifications</span>
-            </label>
-            <label>
-              <span>Chat ID</span>
-              <input
-                value={telegramChatId}
-                onChange={(event) => setTelegramChatId(event.target.value)}
-              />
-            </label>
-            <label>
-              <span>Bot token</span>
-              <input
-                type="password"
-                placeholder={
-                  settings?.notifications?.telegram.botTokenConfigured
-                    ? settings.notifications.telegram.botTokenMasked
-                    : ""
-                }
-                value={telegramBotToken}
-                onChange={(event) => setTelegramBotToken(event.target.value)}
-              />
-            </label>
+            <div className="meta-list">
+              <span>Estado</span>
+              <strong>{telegramConnected ? "✅ Telegram conectado" : "No conectado"}</strong>
+              <span>Grupo</span>
+              <strong>{telegramSettings?.chatTitle || telegramSettings?.chatId || "-"}</strong>
+              <span>Conectado</span>
+              <strong>{formatDate(telegramSettings?.connectedAt)}</strong>
+            </div>
+
+            {telegramPairing && (
+              <div className="source-preview">
+                <strong>{telegramPairing.code}</strong>
+                <p>
+                  Añade el bot de HotelApp al grupo de Telegram que debe recibir los avisos y
+                  escribe: {telegramConnectCommand}
+                </p>
+                <div className="meta-list">
+                  <span>Hotel</span>
+                  <strong>{telegramPairing.tenant.name}</strong>
+                  <span>Caduca</span>
+                  <strong>{formatDate(telegramPairing.expiresAt)}</strong>
+                </div>
+              </div>
+            )}
+
             <div className="button-row">
               <button
                 type="button"
                 onClick={() =>
                   run(
-                    "telegram-save",
+                    "telegram-pairing",
                     async () => {
-                      const next = await saveNotifications({
-                        telegram: {
-                          enabled: telegramEnabled,
-                          chatId: telegramChatId,
-                          botToken: telegramBotToken,
-                        },
-                      });
-                      setTelegramBotToken("");
-                      return next;
+                      const pairing = await generateTelegramPairingCode();
+                      setTelegramPairing(pairing);
+                      return pairing;
                     },
-                    "Telegram settings saved.",
+                    "Telegram pairing code generated.",
                   )
                 }
                 disabled={busy !== ""}
               >
-                <Save size={15} />
-                Save
+                <Plus size={15} />
+                Generar código
+              </button>
+              {telegramPairing && (
+                <button
+                  type="button"
+                  onClick={() => copyToClipboard(telegramConnectCommand)}
+                  disabled={busy !== ""}
+                >
+                  <Copy size={15} />
+                  Copiar comando
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() =>
+                  run(
+                    "telegram-disconnect",
+                    async () => {
+                      setTelegramPairing(undefined);
+                      return disconnectTelegram();
+                    },
+                    "Telegram disconnected.",
+                  )
+                }
+                disabled={busy !== "" || !telegramConnected}
+              >
+                <Trash2 size={15} />
+                Desconectar Telegram
               </button>
             </div>
           </div>

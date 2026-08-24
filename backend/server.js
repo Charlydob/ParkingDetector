@@ -34,6 +34,12 @@ import {
   updateTenantSettings,
 } from "./services/tenantSettingsService.js";
 import {
+  connectTelegramChat,
+  createTelegramPairingCode,
+  disconnectTelegramChat,
+  validateTelegramIntegrationSecret,
+} from "./services/telegramIntegrationService.js";
+import {
   clearSessionCookieHeader,
   loginWithPassword,
   sessionCookieHeader,
@@ -83,7 +89,8 @@ function corsHeaders(request) {
     "Access-Control-Allow-Origin": allowedOrigin || requestOrigin || "*",
     "Access-Control-Allow-Credentials": "true",
     "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Stripe-Signature, X-Tenant-Id, X-Tenant-Slug",
+    "Access-Control-Allow-Headers":
+      "Content-Type, Stripe-Signature, X-Tenant-Id, X-Tenant-Slug, X-HotelApp-Secret",
   };
 }
 
@@ -501,6 +508,34 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "POST" && pathname === "/api/integrations/telegram/connect") {
+      if (!validateTelegramIntegrationSecret(request.headers)) {
+        sendJson(response, 401, { success: false, error: "Unauthorized." });
+        return;
+      }
+
+      const result = await connectTelegramChat(database, await readJsonBody(request));
+      sendJson(response, result.success ? 200 : 400, result);
+      return;
+    }
+
+    if (request.method === "POST" && pathname === "/api/integrations/telegram/pairing-code") {
+      const context = await getProtectedContext(request);
+      const tenantId = requireTenant(context.session);
+      requireTenantAdmin(context.session, tenantId);
+      sendJson(response, 200, await createTelegramPairingCode(database, tenantId));
+      return;
+    }
+
+    if (request.method === "POST" && pathname === "/api/integrations/telegram/disconnect") {
+      const context = await getProtectedContext(request);
+      const tenantId = requireTenant(context.session);
+      requireTenantAdmin(context.session, tenantId);
+      await disconnectTelegramChat(database, tenantId);
+      sendJson(response, 200, await getPublicTenantSettings(database, tenantId));
+      return;
+    }
+
     if (pathname.startsWith("/api/checkout/")) {
       const result = await handleCheckoutRoute({
         request,
@@ -688,10 +723,6 @@ const server = createServer(async (request, response) => {
         enabled: Boolean(telegram.enabled),
         chatId: String(telegram.chatId ?? "").trim(),
       };
-
-      if (String(telegram.botToken ?? "").trim()) {
-        notificationPatch.botToken = String(telegram.botToken ?? "").trim();
-      }
 
       await updateTenantSettings(database, tenantId, {
         notifications: {

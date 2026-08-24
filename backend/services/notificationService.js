@@ -2,11 +2,6 @@ function cleanString(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function maskSecret(value) {
-  const secret = cleanString(value);
-  return secret ? `${"*".repeat(10)}${secret.slice(-4)}` : "";
-}
-
 export function getPublicNotificationSettings(settings = {}) {
   const telegram = settings.telegram || {};
 
@@ -14,39 +9,68 @@ export function getPublicNotificationSettings(settings = {}) {
     telegram: {
       enabled: Boolean(telegram.enabled),
       chatId: cleanString(telegram.chatId),
-      botTokenMasked: maskSecret(telegram.botToken),
-      botTokenConfigured: Boolean(cleanString(telegram.botToken)),
+      chatTitle: cleanString(telegram.chatTitle),
+      chatType: cleanString(telegram.chatType),
+      connectedAt: cleanString(telegram.connectedAt),
     },
   };
 }
 
-export async function sendCheckoutNotification({ tenantSettings, room, event }) {
+export async function sendCheckoutNotification({ tenant, tenantSettings, room, event }) {
   const telegram = tenantSettings?.notifications?.telegram || tenantSettings?.telegram || {};
 
-  if (!telegram.enabled || !telegram.botToken || !telegram.chatId) {
+  if (!telegram.enabled || !cleanString(telegram.chatId)) {
     return { sent: false, skipped: true };
   }
 
-  const text = `Room ${room.number} - checkout completed.`;
+  const webhookUrl = cleanString(process.env.N8N_CHECKOUT_WEBHOOK_URL);
+  const webhookSecret = cleanString(process.env.N8N_CHECKOUT_WEBHOOK_SECRET);
+
+  if (!webhookUrl || !webhookSecret) {
+    console.warn("[Notifications] n8n checkout webhook is not configured.");
+    return { sent: false, skipped: true };
+  }
+
+  const payload = {
+    event: "checkout.completed",
+    tenant: {
+      id: tenant?.id || event.tenantId,
+      slug: tenant?.slug || "",
+      name: tenant?.name || "",
+    },
+    room: {
+      id: room.id,
+      number: room.number,
+      name: room.name || "",
+    },
+    checkout: {
+      id: event.id,
+      source: event.source,
+      timestamp: event.timestamp,
+    },
+    notification: {
+      chatId: cleanString(telegram.chatId),
+    },
+  };
 
   try {
-    const response = await fetch(
-      `https://api.telegram.org/bot${telegram.botToken}/sendMessage`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: telegram.chatId, text }),
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-HotelApp-Secret": webhookSecret,
       },
-    );
+      body: JSON.stringify(payload),
+    });
 
     if (!response.ok) {
-      throw new Error(`Telegram HTTP ${response.status}`);
+      throw new Error(`n8n HTTP ${response.status}`);
     }
 
     return { sent: true };
   } catch (error) {
     console.warn(
-      `[Notifications] Telegram checkout notification failed: ${
+      `[Notifications] n8n checkout webhook failed: ${
         error instanceof Error ? error.message : "unknown error"
       }`,
     );

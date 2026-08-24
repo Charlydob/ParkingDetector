@@ -107,3 +107,32 @@ test("tenant integration settings are isolated between tenants", async () => {
   assert.equal(tenantB.reservations.jsonFeed.url, "");
   assert.equal(tenantB.frigate.baseUrl, "http://frigate-b:5000");
 });
+
+test("legacy Telegram bot tokens are not exposed or persisted on settings update", async () => {
+  const database = createFakeDatabase({
+    tenantSettings: {
+      "hotel-a": {
+        tenantId: "hotel-a",
+        notifications: {
+          telegram: { enabled: true, botToken: "legacy-token", chatId: "chat-a" },
+        },
+      },
+    },
+  });
+
+  const settings = await getTenantSettings(database, "hotel-a");
+  const publicSettings = await getPublicTenantSettings(database, "hotel-a");
+
+  assert.equal(settings.notifications.telegram.enabled, true);
+  assert.equal(settings.notifications.telegram.chatId, "chat-a");
+  assert.equal(settings.notifications.telegram.botToken, undefined);
+  assert.equal(publicSettings.notifications.telegram.chatId, "chat-a");
+  assert.equal(publicSettings.notifications.telegram.botTokenConfigured, undefined);
+
+  await updateTenantSettings(database, "hotel-a", {
+    notifications: { telegram: { enabled: true, chatId: "chat-b" } },
+  });
+
+  assert.equal(database.data.tenantSettings["hotel-a"].notifications.telegram.chatId, "chat-b");
+  assert.equal(database.data.tenantSettings["hotel-a"].notifications.telegram.botToken, undefined);
+});

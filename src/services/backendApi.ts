@@ -187,8 +187,9 @@ export interface IntegrationSettings {
     telegram: {
       enabled: boolean;
       chatId: string;
-      botTokenMasked: string;
-      botTokenConfigured: boolean;
+      chatTitle?: string;
+      chatType?: string;
+      connectedAt?: string;
     };
   };
   reservationDiagnostics?: {
@@ -287,8 +288,9 @@ function normalizeIntegrationSettings(payload: IntegrationSettings): Integration
       telegram: {
         enabled: Boolean(payload.notifications?.telegram?.enabled),
         chatId: payload.notifications?.telegram?.chatId || "",
-        botTokenMasked: payload.notifications?.telegram?.botTokenMasked || "",
-        botTokenConfigured: Boolean(payload.notifications?.telegram?.botTokenConfigured),
+        chatTitle: payload.notifications?.telegram?.chatTitle || "",
+        chatType: payload.notifications?.telegram?.chatType || "",
+        connectedAt: payload.notifications?.telegram?.connectedAt || "",
       },
     },
     reservationDiagnostics: payload.reservationDiagnostics,
@@ -544,12 +546,32 @@ export async function disconnectStripe(): Promise<IntegrationSettings["stripe"]>
 }
 
 export async function saveNotifications(settings: {
-  telegram: { enabled: boolean; chatId: string; botToken?: string };
+  telegram: { enabled: boolean; chatId: string };
 }): Promise<IntegrationSettings> {
   return normalizeIntegrationSettings(
     await requestJson<IntegrationSettings>("/api/settings/notifications", {
       method: "POST",
       body: JSON.stringify(settings),
+    }),
+  );
+}
+
+export async function generateTelegramPairingCode(): Promise<{
+  code: string;
+  expiresAt: string;
+  tenant: { id: string; name: string; slug: string };
+}> {
+  return requestJson("/api/integrations/telegram/pairing-code", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function disconnectTelegram(): Promise<IntegrationSettings> {
+  return normalizeIntegrationSettings(
+    await requestJson<IntegrationSettings>("/api/integrations/telegram/disconnect", {
+      method: "POST",
+      body: JSON.stringify({}),
     }),
   );
 }

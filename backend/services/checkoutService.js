@@ -183,6 +183,7 @@ export async function registerCheckout(database, tenantId, roomId, source, optio
     throw error;
   }
 
+  const sourceIdentifier = cleanString(options.sourceIdentifier);
   const room = await database.getTenantRecord("rooms", tenantId, roomId);
 
   if (!room || room.active === false) {
@@ -195,7 +196,7 @@ export async function registerCheckout(database, tenantId, roomId, source, optio
     .filter(
       (event) =>
         event.roomId === roomId &&
-        event.sourceIdentifier === options.sourceIdentifier &&
+        event.sourceIdentifier === sourceIdentifier &&
         withinCooldown(event),
     )
     .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime());
@@ -214,7 +215,7 @@ export async function registerCheckout(database, tenantId, roomId, source, optio
     tenantId,
     roomId,
     source,
-    sourceIdentifier: cleanString(options.sourceIdentifier),
+    sourceIdentifier,
     timestamp,
     status: "registered",
     metadata: options.metadata || {},
@@ -230,8 +231,12 @@ export async function registerCheckout(database, tenantId, roomId, source, optio
   await database.setRecord("checkoutEvents", event.id, event);
   await database.setRecord("rooms", roomId, updatedRoom);
 
-  const tenantSettings = await getTenantSettings(database, tenantId);
+  const [tenant, tenantSettings] = await Promise.all([
+    database.getRecord("tenants", tenantId),
+    getTenantSettings(database, tenantId),
+  ]);
   void sendCheckoutNotification({
+    tenant,
     tenantSettings,
     room: updatedRoom,
     event,

@@ -107,7 +107,6 @@ function emptyTenantSettings(tenantId) {
     notifications: {
       telegram: {
         enabled: false,
-        botToken: "",
         chatId: "",
       },
     },
@@ -141,6 +140,18 @@ function normalizeSettings(tenantId, stored = {}) {
       pollIntervalMs: Number(next.frigate?.pollIntervalMs || 5000),
       cameras: Array.isArray(next.frigate?.cameras) ? next.frigate.cameras : [],
     },
+    notifications: {
+      ...next.notifications,
+      telegram: {
+        enabled: Boolean(next.notifications?.telegram?.enabled),
+        chatId: cleanString(next.notifications?.telegram?.chatId),
+        chatTitle: cleanString(next.notifications?.telegram?.chatTitle),
+        chatType: cleanString(next.notifications?.telegram?.chatType),
+        connectedAt: cleanString(next.notifications?.telegram?.connectedAt),
+        telegramUserId: cleanString(next.notifications?.telegram?.telegramUserId),
+        telegramUsername: cleanString(next.notifications?.telegram?.telegramUsername),
+      },
+    },
   };
 }
 
@@ -164,11 +175,11 @@ export async function createEmptyTenantSettings(database, tenantId) {
 
 export async function updateTenantSettings(database, tenantId, patch) {
   const current = await getTenantSettings(database, tenantId);
-  const next = {
+  const next = normalizeSettings(tenantId, {
     ...deepMerge(current, patch),
     tenantId,
     updatedAt: now(),
-  };
+  });
 
   await database.setRecord("tenantSettings", tenantId, next);
 

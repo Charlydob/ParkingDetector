@@ -5,6 +5,7 @@ import {
   createRoom,
   checkoutIdentifierFromValue,
   listCheckoutOverview,
+  registerCheckout,
   registerCheckoutByIdentifier,
   resolveCheckoutByIdentifier,
   updateKeyIdentifier,
@@ -57,6 +58,56 @@ function createFakeDatabase(initial = {}) {
   };
 }
 
+function withN8nCheckoutWebhook(fetchImplementation, callback) {
+  const originalFetch = global.fetch;
+  const originalUrl = process.env.N8N_CHECKOUT_WEBHOOK_URL;
+  const originalSecret = process.env.N8N_CHECKOUT_WEBHOOK_SECRET;
+
+  global.fetch = fetchImplementation;
+  process.env.N8N_CHECKOUT_WEBHOOK_URL = "https://n8n.example.test/webhook/checkout";
+  process.env.N8N_CHECKOUT_WEBHOOK_SECRET = "shared-secret";
+
+  return Promise.resolve()
+    .then(callback)
+    .finally(() => {
+      global.fetch = originalFetch;
+      if (originalUrl === undefined) {
+        delete process.env.N8N_CHECKOUT_WEBHOOK_URL;
+      } else {
+        process.env.N8N_CHECKOUT_WEBHOOK_URL = originalUrl;
+      }
+      if (originalSecret === undefined) {
+        delete process.env.N8N_CHECKOUT_WEBHOOK_SECRET;
+      } else {
+        process.env.N8N_CHECKOUT_WEBHOOK_SECRET = originalSecret;
+      }
+    });
+}
+
+function createNotificationDatabase({ tenantId = "hotelA", enabled = true, chatId = "chat-a" } = {}) {
+  return createFakeDatabase({
+    tenants: {
+      [tenantId]: { id: tenantId, name: "Hotel A", slug: "hotel-a", active: true },
+    },
+    tenantSettings: {
+      [tenantId]: {
+        tenantId,
+        notifications: {
+          telegram: { enabled, chatId, botToken: "legacy-token" },
+        },
+      },
+    },
+  });
+}
+
+function parseWebhookCall(call) {
+  return {
+    url: call[0],
+    init: call[1],
+    payload: JSON.parse(call[1].body),
+  };
+}
+
 test("module entitlement is enforced per tenant", async () => {
   const database = createFakeDatabase({
     tenantModules: {
@@ -72,6 +123,159 @@ test("module entitlement is enforced per tenant", async () => {
     () => requireModule(database, { activeTenantId: "hotelB" }, "checkout"),
     /not enabled/,
   );
+});
+
+test("QR checkout sends n8n webhook", async () => {
+  const calls = [];
+  const database = createNotificationDatabase();
+  const room = await createRoom(database, "hotelA", { number: "109" });
+  const key = await createKeyIdentifier(database, "hotelA", { roomId: room.id });
+
+  await withN8nCheckoutWebhook(async (...args) => {
+    calls.push(args);
+    return { ok: true, status: 200 };
+  }, async () => {
+    const result = await registerCheckoutByIdentifier(database, key.identifier, "qr");
+
+    assert.equal(result.duplicate, false);
+    assert.equal(calls.length, 1);
+    const { url, init, payload } = parseWebhookCall(calls[0]);
+    assert.equal(url, "https://n8n.example.test/webhook/checkout");
+    assert.equal(init.headers["X-HotelApp-Secret"], "shared-secret");
+    assert.equal(payload.event, "checkout.completed");
+    assert.equal(payload.checkout.source, "qr");
+    assert.equal(payload.room.number, "109");
+  });
+});
+
+test("manual checkout sends n8n webhook", async () => {
+  const calls = [];
+  const database = createNotificationDatabase();
+  const room = await createRoom(database, "hotelA", { number: "204" });
+
+  await withN8nCheckoutWebhook(async (...args) => {
+    calls.push(args);
+    return { ok: true, status: 200 };
+  }, async () => {
+    const result = await registerCheckout(database, "hotelA", room.id, "manual");
+
+    assert.equal(result.duplicate, false);
+    assert.equal(calls.length, 1);
+    assert.equal(parseWebhookCall(calls[0]).payload.checkout.source, "manual");
+  });
+});
+
+test("checkout webhook uses the correct tenant and chatId", async () => {
+  const calls = [];
+  const database = createFakeDatabase({
+    tenants: {
+      hotelA: { id: "hotelA", name: "Hotel A", slug: "hotel-a", active: true },
+      hotelB: { id: "hotelB", name: "Hotel B", slug: "hotel-b", active: true },
+    },
+    tenantSettings: {
+      hotelA: {
+        tenantId: "hotelA",
+        notifications: { telegram: { enabled: true, chatId: "chat-a" } },
+      },
+      hotelB: {
+        tenantId: "hotelB",
+        notifications: { telegram: { enabled: true, chatId: "chat-b" } },
+      },
+    },
+  });
+  const room = await createRoom(database, "hotelB", { number: "305", name: "Suite" });
+
+  await withN8nCheckoutWebhook(async (...args) => {
+    calls.push(args);
+    return { ok: true, status: 200 };
+  }, async () => {
+    await registerCheckout(database, "hotelB", room.id, "manual");
+
+    assert.equal(calls.length, 1);
+    const { payload } = parseWebhookCall(calls[0]);
+    assert.deepEqual(payload.tenant, {
+      id: "hotelB",
+      slug: "hotel-b",
+      name: "Hotel B",
+    });
+    assert.equal(payload.notification.chatId, "chat-b");
+    assert.equal(payload.room.id, room.id);
+    assert.equal(payload.room.name, "Suite");
+  });
+});
+
+test("duplicate checkout does not send another n8n webhook", async () => {
+  const calls = [];
+  const database = createNotificationDatabase();
+  const room = await createRoom(database, "hotelA", { number: "109" });
+  const key = await createKeyIdentifier(database, "hotelA", { roomId: room.id });
+
+  await withN8nCheckoutWebhook(async (...args) => {
+    calls.push(args);
+    return { ok: true, status: 200 };
+  }, async () => {
+    const first = await registerCheckoutByIdentifier(database, key.identifier, "qr");
+    const second = await registerCheckoutByIdentifier(database, key.identifier, "qr");
+
+    assert.equal(first.duplicate, false);
+    assert.equal(second.duplicate, true);
+    assert.equal(calls.length, 1);
+  });
+});
+
+test("n8n webhook failure does not break checkout registration", async () => {
+  const database = createNotificationDatabase();
+  const room = await createRoom(database, "hotelA", { number: "109" });
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(" "));
+
+  try {
+    await withN8nCheckoutWebhook(async () => {
+      throw new Error("n8n unavailable");
+    }, async () => {
+      const result = await registerCheckout(database, "hotelA", room.id, "manual");
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.equal(result.duplicate, false);
+      assert.equal(Object.values(database.data.checkoutEvents).length, 1);
+      assert.equal(warnings.some((warning) => warning.includes("n8n checkout webhook failed")), true);
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
+test("disabled Telegram notifications do not call n8n webhook", async () => {
+  const calls = [];
+  const database = createNotificationDatabase({ enabled: false, chatId: "chat-a" });
+  const room = await createRoom(database, "hotelA", { number: "109" });
+
+  await withN8nCheckoutWebhook(async (...args) => {
+    calls.push(args);
+    return { ok: true, status: 200 };
+  }, async () => {
+    const result = await registerCheckout(database, "hotelA", room.id, "manual");
+
+    assert.equal(result.duplicate, false);
+    assert.equal(calls.length, 0);
+  });
+});
+
+test("missing Telegram chatId does not call n8n webhook", async () => {
+  const calls = [];
+  const database = createNotificationDatabase({ enabled: true, chatId: "" });
+  const room = await createRoom(database, "hotelA", { number: "109" });
+
+  await withN8nCheckoutWebhook(async (...args) => {
+    calls.push(args);
+    return { ok: true, status: 200 };
+  }, async () => {
+    const result = await registerCheckout(database, "hotelA", room.id, "manual");
+
+    assert.equal(result.duplicate, false);
+    assert.equal(calls.length, 0);
+  });
 });
 
 test("tenant-scoped room listing never returns another tenant room", async () => {
