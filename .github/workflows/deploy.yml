@@ -1,4 +1,4 @@
-name: Deploy to GitHub Pages
+name: Deploy HotelApp to Hetzner
 
 on:
   push:
@@ -8,15 +8,13 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: hotelapp-production
+  cancel-in-progress: true
 
 jobs:
-  build:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -31,21 +29,43 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Test
+        run: npm test
+
       - name: Build
         run: npm run build
 
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist
+      - name: Validate Prisma schema
+        env:
+          DATABASE_URL: postgresql://hotelapp:dummy@localhost:5432/hotelapp
+        run: npx prisma validate
 
   deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    needs: build
+    needs: verify
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.HETZNER_SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.HETZNER_SSH_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy
+        env:
+          SSH_HOST: ${{ secrets.HETZNER_SSH_HOST }}
+          SSH_USER: ${{ secrets.HETZNER_SSH_USER }}
+        run: |
+          ssh "$SSH_USER@$SSH_HOST" <<'EOF'
+            set -euo pipefail
+            cd /opt/hotelapp
+            git fetch origin main
+            git reset --hard origin/main
+            docker compose -f docker-compose.hetzner.yml up -d --build --remove-orphans
+            docker compose -f docker-compose.hetzner.yml ps
+            curl --fail --silent --show-error http://127.0.0.1:3001/api/health
+            curl --fail --silent --show-error http://127.0.0.1:3000/ >/dev/null
+          EOF
