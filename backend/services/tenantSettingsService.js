@@ -24,6 +24,16 @@ function cleanString(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function cleanTelegramId(value) {
+  if (value === undefined || value === null) {
+    return "";
+  }
+
+  return typeof value === "string" || typeof value === "number" || typeof value === "bigint"
+    ? String(value).trim()
+    : "";
+}
+
 function maskSecret(value) {
   const secret = cleanString(value);
 
@@ -156,11 +166,11 @@ function normalizeSettings(tenantId, stored = {}) {
       ...next.notifications,
       telegram: {
         enabled: Boolean(next.notifications?.telegram?.enabled),
-        chatId: cleanString(next.notifications?.telegram?.chatId),
+        chatId: cleanTelegramId(next.notifications?.telegram?.chatId),
         chatTitle: cleanString(next.notifications?.telegram?.chatTitle),
         chatType: cleanString(next.notifications?.telegram?.chatType),
         connectedAt: cleanString(next.notifications?.telegram?.connectedAt),
-        telegramUserId: cleanString(next.notifications?.telegram?.telegramUserId),
+        telegramUserId: cleanTelegramId(next.notifications?.telegram?.telegramUserId),
         telegramUsername: cleanString(next.notifications?.telegram?.telegramUsername),
         diagnostics: cleanTelegramDiagnostics(next.notifications?.telegram?.diagnostics),
       },

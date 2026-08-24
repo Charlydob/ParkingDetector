@@ -2,6 +2,16 @@ function cleanString(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function cleanTelegramId(value) {
+  if (value === undefined || value === null) {
+    return "";
+  }
+
+  return typeof value === "string" || typeof value === "number" || typeof value === "bigint"
+    ? String(value).trim()
+    : "";
+}
+
 function publicDiagnostics(diagnostics = {}) {
   return {
     lastAttemptAt: cleanString(diagnostics.lastAttemptAt),
@@ -54,7 +64,7 @@ export function getPublicNotificationSettings(settings = {}) {
   return {
     telegram: {
       enabled: Boolean(telegram.enabled),
-      chatId: cleanString(telegram.chatId),
+      chatId: cleanTelegramId(telegram.chatId),
       chatTitle: cleanString(telegram.chatTitle),
       chatType: cleanString(telegram.chatType),
       connectedAt: cleanString(telegram.connectedAt),
@@ -67,7 +77,7 @@ export async function sendCheckoutNotification({ database, tenant, tenantSetting
   const telegram = tenantSettings?.notifications?.telegram || tenantSettings?.telegram || {};
   const tenantId = tenant?.id || event?.tenantId;
 
-  if (!telegram.enabled || !cleanString(telegram.chatId)) {
+  if (!telegram.enabled || !cleanTelegramId(telegram.chatId)) {
     const diagnostics = diagnosticPayload({
       event,
       room,
@@ -115,7 +125,7 @@ export async function sendCheckoutNotification({ database, tenant, tenantSetting
       timestamp: event.timestamp,
     },
     notification: {
-      chatId: cleanString(telegram.chatId),
+      chatId: cleanTelegramId(telegram.chatId),
     },
   };
 

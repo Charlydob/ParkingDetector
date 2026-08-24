@@ -17,6 +17,16 @@ function cleanString(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function cleanTelegramId(value) {
+  if (value === undefined || value === null) {
+    return "";
+  }
+
+  return typeof value === "string" || typeof value === "number" || typeof value === "bigint"
+    ? String(value).trim()
+    : "";
+}
+
 function publicTenant(tenant) {
   return {
     id: tenant.id,
@@ -178,9 +188,9 @@ export async function saveHousekeepingBoardMessage(database, input = {}) {
   const boards = await getDiagnosticValue(database, BOARD_DIAGNOSTIC_KEY);
   boards[tenant.id] = {
     tenantId: tenant.id,
-    chatId: cleanString(input.chatId),
-    messageId: cleanString(input.messageId),
-    threadId: cleanString(input.threadId),
+    chatId: cleanTelegramId(input.chatId),
+    messageId: cleanTelegramId(input.messageId),
+    threadId: cleanTelegramId(input.threadId),
     updatedAt: now(),
   };
   await saveDiagnosticValue(database, BOARD_DIAGNOSTIC_KEY, boards);
@@ -192,8 +202,8 @@ export async function handleHousekeepingAction(database, input = {}) {
   const tenant = await requireTelegramTenant(database, input);
   const action = cleanString(input.action || input.type).toLowerCase();
   const eventId = cleanString(input.eventId || input.checkoutEventId);
-  const chatId = cleanString(input.chatId || input.message?.chat?.id);
-  const telegramUserId = cleanString(input.telegramUserId || input.from?.id);
+  const chatId = cleanTelegramId(input.chatId ?? input.message?.chat?.id);
+  const telegramUserId = cleanTelegramId(input.telegramUserId ?? input.from?.id);
 
   if (action !== "ready" || !eventId || !chatId || !telegramUserId) {
     const error = new Error("Invalid housekeeping action.");
@@ -298,7 +308,7 @@ export function validateTelegramIntegrationSecret(headers = {}) {
 
 export async function connectTelegramChat(database, input = {}) {
   const code = cleanString(input.code).toUpperCase();
-  const chatId = cleanString(input.chatId);
+  const chatId = cleanTelegramId(input.chatId);
 
   if (!code || !chatId) {
     return { success: false, error: "Invalid or expired pairing code." };
@@ -327,7 +337,7 @@ export async function connectTelegramChat(database, input = {}) {
         chatTitle: cleanString(input.chatTitle),
         chatType: cleanString(input.chatType),
         connectedAt: now(),
-        telegramUserId: cleanString(input.telegramUserId),
+        telegramUserId: cleanTelegramId(input.telegramUserId),
         telegramUsername: cleanString(input.telegramUsername),
       },
     },

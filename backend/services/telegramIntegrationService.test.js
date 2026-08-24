@@ -368,3 +368,96 @@ test("Telegram housekeeping Ready uses private double confirmation and creates o
     }
   }
 });
+
+test("Telegram housekeeping board keeps numeric message id across checkout refreshes", async () => {
+  const calls = [];
+  const originalFetch = global.fetch;
+  const originalUrl = process.env.N8N_CHECKOUT_WEBHOOK_URL;
+  const originalSecret = process.env.N8N_CHECKOUT_WEBHOOK_SECRET;
+  global.fetch = async (...args) => {
+    calls.push(args);
+    return { ok: true, status: 200 };
+  };
+  process.env.N8N_CHECKOUT_WEBHOOK_URL = "https://n8n.example.test/webhook/checkout";
+  process.env.N8N_CHECKOUT_WEBHOOK_SECRET = "shared-secret";
+
+  try {
+    const database = createFakeDatabase({
+      tenants: {
+        "hotel-a": { id: "hotel-a", name: "Hotel A", slug: "hotel-a", active: true },
+      },
+      tenantSettings: {
+        "hotel-a": {
+          tenantId: "hotel-a",
+          notifications: {
+            telegram: {
+              enabled: true,
+              chatId: "-100123456789",
+            },
+          },
+        },
+      },
+    });
+    const firstRoom = await createRoom(database, "hotel-a", {
+      number: "109",
+      status: "occupied",
+    });
+    const secondRoom = await createRoom(database, "hotel-a", {
+      number: "110",
+      status: "occupied",
+    });
+
+    const firstCheckout = await registerCheckout(database, "hotel-a", firstRoom.id, "manual", {
+      sourceIdentifier: "manual:first",
+    });
+    assert.equal(calls.length, 1);
+
+    const savedBoard = await saveHousekeepingBoardMessage(database, {
+      tenantId: "hotel-a",
+      chatId: -100123456789,
+      messageId: 77,
+      threadId: 12,
+    });
+
+    assert.equal(savedBoard.board.chatId, "-100123456789");
+    assert.equal(savedBoard.board.messageId, "77");
+    assert.equal(savedBoard.board.threadId, "12");
+    assert.equal(
+      database.data.diagnostics.telegramHousekeepingBoards["hotel-a"].messageId,
+      "77",
+    );
+
+    const nextBoard = await getHousekeepingBoard(database, { tenantId: "hotel-a" });
+
+    assert.equal(nextBoard.board.messageId, "77");
+    assert.deepEqual(
+      nextBoard.items.map((item) => item.eventId),
+      [firstCheckout.event.id],
+    );
+
+    const secondCheckout = await registerCheckout(database, "hotel-a", secondRoom.id, "manual", {
+      sourceIdentifier: "manual:second",
+    });
+    assert.equal(calls.length, 2);
+
+    const refreshedBoard = await getHousekeepingBoard(database, { tenantId: "hotel-a" });
+
+    assert.equal(refreshedBoard.board.messageId, "77");
+    assert.deepEqual(
+      refreshedBoard.items.map((item) => item.eventId).sort(),
+      [firstCheckout.event.id, secondCheckout.event.id].sort(),
+    );
+  } finally {
+    global.fetch = originalFetch;
+    if (originalUrl === undefined) {
+      delete process.env.N8N_CHECKOUT_WEBHOOK_URL;
+    } else {
+      process.env.N8N_CHECKOUT_WEBHOOK_URL = originalUrl;
+    }
+    if (originalSecret === undefined) {
+      delete process.env.N8N_CHECKOUT_WEBHOOK_SECRET;
+    } else {
+      process.env.N8N_CHECKOUT_WEBHOOK_SECRET = originalSecret;
+    }
+  }
+});
