@@ -110,6 +110,20 @@ const staffSession = {
   activeTenantId: "hotelA",
 };
 
+const managerSession = {
+  user: { id: "manager-a", email: "manager-a@example.com" },
+  isPlatformAdmin: false,
+  memberships: [
+    {
+      id: "hotelA:manager-a",
+      tenantId: "hotelA",
+      userId: "manager-a",
+      role: "manager",
+    },
+  ],
+  activeTenantId: "hotelA",
+};
+
 async function assertRejectsWithStatus(fn, statusCode) {
   await assert.rejects(fn, (error) => {
     assert.equal(error.statusCode, statusCode);
@@ -136,13 +150,22 @@ test("platform_admin can invite users to any tenant", async () => {
 test("tenant_admin can invite only inside their tenant", async () => {
   const database = createFakeDatabase();
 
-  const invitation = await createUserInvitation(database, tenantAdminSession, "hotelA", {
+  const tenantAdminInvitation = await createUserInvitation(database, tenantAdminSession, "hotelA", {
+    email: "owner@example.com",
+    role: "tenant_admin",
+  });
+  const managerInvitation = await createUserInvitation(database, tenantAdminSession, "hotelA", {
+    email: "manager@example.com",
+    role: "manager",
+  });
+  const staffInvitation = await createUserInvitation(database, tenantAdminSession, "hotelA", {
     email: "employee@example.com",
     role: "staff",
   });
 
-  assert.equal(invitation.tenantId, "hotelA");
-  assert.equal(invitation.role, "staff");
+  assert.equal(tenantAdminInvitation.role, "tenant_admin");
+  assert.equal(managerInvitation.role, "manager");
+  assert.equal(staffInvitation.role, "staff");
 });
 
 test("tenant_admin cannot invite to another tenant", async () => {
@@ -167,6 +190,23 @@ test("staff cannot invite users", async () => {
         email: "employee@example.com",
         role: "staff",
       }),
+    403,
+  );
+});
+
+test("manager cannot invite or manage tenant users", async () => {
+  const database = createFakeDatabase();
+
+  await assertRejectsWithStatus(
+    () =>
+      createUserInvitation(database, managerSession, "hotelA", {
+        email: "employee@example.com",
+        role: "staff",
+      }),
+    403,
+  );
+  await assertRejectsWithStatus(
+    () => listTenantUsersPayload(database, managerSession, "hotelA"),
     403,
   );
 });

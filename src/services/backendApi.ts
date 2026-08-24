@@ -1,6 +1,6 @@
 import type { Detection } from "../types/detection";
 import type { CheckoutOverview, KeyIdentifier, Room } from "../types/checkout";
-import type { ModuleDefinition, ModuleId } from "../types/modules";
+import type { ModuleDefinition, ModuleId, TenantRole } from "../types/modules";
 import type { Reservation, ReservationSourceName } from "../types/reservation";
 import type {
   AuthSession,
@@ -97,6 +97,41 @@ export interface CheckInResult {
   reservationCode: string;
   fullName: string;
   checkInAt: string;
+}
+
+export interface AppVersion {
+  version: string;
+  environment: string;
+}
+
+export interface PublicCheckoutTarget {
+  key: {
+    id: string;
+    type: "qr" | "nfc" | "rfid";
+    label: string;
+  };
+  room: {
+    id: string;
+    number: string;
+    name?: string;
+    status: string;
+  };
+  tenant: {
+    name: string;
+    slug: string;
+  };
+}
+
+export class BackendRequestError extends Error {
+  code?: string;
+  status: number;
+
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = "BackendRequestError";
+    this.status = status;
+    this.code = code;
+  }
 }
 
 export interface IntegrationSettings {
@@ -276,10 +311,14 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     credentials: "include",
   });
 
-  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  const payload = (await response.json().catch(() => ({}))) as { error?: string; code?: string };
 
   if (!response.ok) {
-    throw new Error(payload.error || `Backend request failed (${response.status}).`);
+    throw new BackendRequestError(
+      payload.error || `Backend request failed (${response.status}).`,
+      response.status,
+      payload.code,
+    );
   }
 
   return payload as T;
@@ -295,10 +334,14 @@ async function requestPublicJson<T>(path: string, init?: RequestInit): Promise<T
     credentials: "include",
   });
 
-  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  const payload = (await response.json().catch(() => ({}))) as { error?: string; code?: string };
 
   if (!response.ok) {
-    throw new Error(payload.error || `Backend request failed (${response.status}).`);
+    throw new BackendRequestError(
+      payload.error || `Backend request failed (${response.status}).`,
+      response.status,
+      payload.code,
+    );
   }
 
   return payload as T;
@@ -332,6 +375,10 @@ export async function getModuleRegistry(): Promise<ModuleDefinition[]> {
 
 export async function getBackendStatus(): Promise<BackendStatus> {
   return requestJson<BackendStatus>("/api/status");
+}
+
+export async function getAppVersion(): Promise<AppVersion> {
+  return requestPublicJson<AppVersion>("/api/version");
 }
 
 export async function testBackendConnection(url: string): Promise<BackendStatus> {
@@ -609,7 +656,7 @@ export async function updateRoom(roomId: string, input: Partial<Room>): Promise<
 export async function createCheckoutKey(input: {
   roomId: string;
   label?: string;
-}): Promise<KeyIdentifier & { qrDataUrl: string }> {
+}): Promise<KeyIdentifier & { qrDataUrl: string; checkoutUrl: string }> {
   return requestJson("/api/checkout/keys", {
     method: "POST",
     body: JSON.stringify({ ...input, type: "qr" }),
@@ -619,7 +666,7 @@ export async function createCheckoutKey(input: {
 export async function updateCheckoutKey(
   keyId: string,
   input: Partial<KeyIdentifier> & { regenerate?: boolean },
-): Promise<KeyIdentifier & { qrDataUrl: string }> {
+): Promise<KeyIdentifier & { qrDataUrl: string; checkoutUrl: string }> {
   return requestJson(`/api/checkout/keys/${encodeURIComponent(keyId)}`, {
     method: "PATCH",
     body: JSON.stringify(input),
@@ -638,15 +685,22 @@ export async function getPublicCheckoutTenant(slug: string): Promise<{
   slug: string;
   enabled: boolean;
 }> {
-  return requestJson(`/api/public/tenants/${encodeURIComponent(slug)}/checkout`);
+  return requestPublicJson(`/api/public/tenants/${encodeURIComponent(slug)}/checkout`);
+}
+
+export async function resolvePublicCheckout(token: string): Promise<PublicCheckoutTarget> {
+  return requestPublicJson<PublicCheckoutTarget>(
+    `/api/public/checkout/${encodeURIComponent(token)}`,
+  );
 }
 
 export async function submitPublicCheckout(token: string): Promise<{
   success: boolean;
   duplicate: boolean;
   timestamp: string;
+  room: { number: string };
 }> {
-  return requestJson(`/api/public/checkout/${encodeURIComponent(token)}`, {
+  return requestPublicJson(`/api/public/checkout/${encodeURIComponent(token)}`, {
     method: "POST",
     body: JSON.stringify({}),
   });
@@ -693,6 +747,12 @@ export async function updateAdminTenant(
   });
 }
 
+export async function deleteAdminTenant(tenantId: string): Promise<{ success: boolean }> {
+  return requestJson<{ success: boolean }>(`/api/admin/tenants/${encodeURIComponent(tenantId)}`, {
+    method: "DELETE",
+  });
+}
+
 export async function getAdminTenantIntegrationSettings(
   tenantId: string,
 ): Promise<IntegrationSettings> {
@@ -731,7 +791,7 @@ export async function setAdminTenantModule(
 
 export async function createAdminTenantInvitation(
   tenantId: string,
-  input: { email: string; role: "tenant_admin" | "staff" },
+  input: { email: string; role: TenantRole },
 ): Promise<UserInvitation> {
   return requestJson<UserInvitation>(
     `/api/admin/tenants/${encodeURIComponent(tenantId)}/invitations`,
@@ -774,7 +834,7 @@ export async function regenerateAdminTenantInvitation(
 export async function updateAdminTenantMembershipRole(
   tenantId: string,
   membershipId: string,
-  role: "tenant_admin" | "staff",
+  role: TenantRole,
 ): Promise<TenantMembership> {
   return requestJson<TenantMembership>(
     `/api/admin/tenants/${encodeURIComponent(tenantId)}/memberships/${encodeURIComponent(membershipId)}`,
@@ -815,7 +875,7 @@ export async function updateTenantProfile(input: {
 
 export async function createTenantInvitation(input: {
   email: string;
-  role: "tenant_admin" | "staff";
+  role: TenantRole;
 }): Promise<UserInvitation> {
   return requestJson<UserInvitation>("/api/tenant/invitations", {
     method: "POST",
@@ -847,7 +907,7 @@ export async function regenerateTenantInvitation(invitationId: string): Promise<
 
 export async function updateTenantMembershipRole(
   membershipId: string,
-  role: "tenant_admin" | "staff",
+  role: TenantRole,
 ): Promise<TenantMembership> {
   return requestJson<TenantMembership>(
     `/api/tenant/memberships/${encodeURIComponent(membershipId)}`,

@@ -6,8 +6,8 @@ export type RoomStatus =
   | "ready"
   | "unknown";
 
-export type CheckoutSource = "qr" | "nfc" | "manual" | "pms" | "other";
-export type KeyIdentifierType = "qr" | "nfc";
+export type CheckoutSource = "qr" | "nfc" | "rfid" | "manual" | "pms" | "other";
+export type KeyIdentifierType = "qr" | "nfc" | "rfid";
 
 export interface Room {
   id: string;
@@ -32,6 +32,7 @@ export interface KeyIdentifier {
   active: boolean;
   createdAt: string;
   updatedAt: string;
+  checkoutUrl?: string;
 }
 
 export interface CheckoutEvent {

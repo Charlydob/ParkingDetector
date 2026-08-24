@@ -99,6 +99,8 @@ function PrivateApp() {
   const activeTenantRole = session?.memberships.find(
     (membership) => membership.tenantId === activeTenantId,
   )?.role || (session?.isPlatformAdmin && activeTenantId ? "platform_admin" : undefined);
+  const canConfigureTenant =
+    activeTenantRole === "platform_admin" || activeTenantRole === "tenant_admin";
 
   function navigate(nextRoute: AppRoute) {
     window.history.pushState(
@@ -133,8 +135,8 @@ function PrivateApp() {
       ? "admin"
       : (
           (route === "users" &&
-            activeTenantRole !== "platform_admin" &&
-            activeTenantRole !== "tenant_admin") ||
+            !canConfigureTenant) ||
+          ((route === "settings" || route === "integrations") && !canConfigureTenant) ||
           (route === "parking" && !enabledModules.parking) ||
           (route === "checkout" && !enabledModules.checkout)
             ? "dashboard"
@@ -170,7 +172,10 @@ export default function App() {
     return <CheckInDemoPage />;
   }
 
-  if (/^\/public\/[^/]+\/checkout$/.test(window.location.pathname)) {
+  if (
+    /^\/public\/[^/]+\/checkout$/.test(window.location.pathname) ||
+    /^\/checkout\/[^/]+$/.test(window.location.pathname)
+  ) {
     return <PublicCheckoutPage />;
   }
 

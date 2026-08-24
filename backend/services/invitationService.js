@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { sendUserInvitationNotification } from "./notificationService.js";
 import { createLoginSession, hashPassword, verifyPassword } from "./sessionService.js";
 
-const INVITABLE_ROLES = new Set(["tenant_admin", "staff"]);
+const INVITABLE_ROLES = new Set(["tenant_admin", "manager", "staff"]);
 const INVITATION_TTL_DAYS = Number(process.env.INVITATION_TTL_DAYS || 7);
 
 function now() {
@@ -27,7 +27,7 @@ function assertValidEmail(email) {
 
 function assertInvitableRole(role) {
   if (!INVITABLE_ROLES.has(role)) {
-    const error = new Error("Only tenant_admin and staff can be invited.");
+    const error = new Error("Only tenant_admin, manager and staff can be invited.");
     error.statusCode = 400;
     throw error;
   }

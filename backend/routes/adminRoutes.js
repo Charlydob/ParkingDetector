@@ -1,6 +1,7 @@
 import { MODULE_REGISTRY } from "../moduleRegistry.js";
 import {
   createTenant,
+  deleteTenant,
   requirePlatformAdmin,
   setTenantModule,
   updateTenant,
@@ -126,6 +127,11 @@ export async function handleAdminRoute({ request, pathname, body, context }) {
   if (request.method === "PATCH" && tenantMatch) {
     const tenantId = decodeURIComponent(tenantMatch[1]);
     return { status: 200, payload: await updateTenant(database, tenantId, body) };
+  }
+
+  if (request.method === "DELETE" && tenantMatch) {
+    const tenantId = decodeURIComponent(tenantMatch[1]);
+    return { status: 200, payload: await deleteTenant(database, tenantId) };
   }
 
   const tenantIntegrationsMatch = pathname.match(

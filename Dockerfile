@@ -5,9 +5,11 @@ RUN npm ci
 
 FROM deps AS runtime
 WORKDIR /app
+ARG GIT_SHA=unknown
 ENV NODE_ENV=production
 ENV BACKEND_HOST=0.0.0.0
 ENV BACKEND_PORT=3001
+ENV GIT_SHA=${GIT_SHA}
 COPY prisma ./prisma
 RUN npx prisma generate --schema prisma/schema.prisma
 COPY backend ./backend

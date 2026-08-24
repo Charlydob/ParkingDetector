@@ -35,7 +35,7 @@ export function CheckoutPage() {
   const [roomName, setRoomName] = useState("");
   const [selectedRoomId, setSelectedRoomId] = useState("");
   const [keyLabel, setKeyLabel] = useState("");
-  const [qrPreview, setQrPreview] = useState<{ label: string; dataUrl: string }>();
+  const [qrPreview, setQrPreview] = useState<{ label: string; dataUrl: string; checkoutUrl?: string }>();
   const [notice, setNotice] = useState("");
 
   async function reload() {
@@ -79,14 +79,14 @@ export function CheckoutPage() {
   async function createKey() {
     const key = await createCheckoutKey({ roomId: selectedRoomId, label: keyLabel });
     setKeyLabel("");
-    setQrPreview({ label: key.label, dataUrl: key.qrDataUrl });
+    setQrPreview({ label: key.label, dataUrl: key.qrDataUrl, checkoutUrl: key.checkoutUrl });
     setNotice("QR key created.");
     await reload();
   }
 
   async function regenerate(key: KeyIdentifier) {
     const next = await updateCheckoutKey(key.id, { regenerate: true });
-    setQrPreview({ label: next.label, dataUrl: next.qrDataUrl });
+    setQrPreview({ label: next.label, dataUrl: next.qrDataUrl, checkoutUrl: next.checkoutUrl });
     setNotice("QR token regenerated.");
     await reload();
   }
@@ -298,6 +298,12 @@ export function CheckoutPage() {
               {qrPreview ? (
                 <>
                   <img className="qr-preview" src={qrPreview.dataUrl} alt={`${qrPreview.label} QR`} />
+                  {qrPreview.checkoutUrl && (
+                    <label>
+                      <span>Direct URL</span>
+                      <input readOnly value={qrPreview.checkoutUrl} />
+                    </label>
+                  )}
                   <button type="button" onClick={downloadQr}>
                     <Download size={15} />
                     Download PNG

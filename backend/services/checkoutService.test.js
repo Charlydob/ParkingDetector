@@ -3,8 +3,11 @@ import assert from "node:assert/strict";
 import {
   createKeyIdentifier,
   createRoom,
+  checkoutIdentifierFromValue,
   listCheckoutOverview,
   registerCheckoutByIdentifier,
+  resolveCheckoutByIdentifier,
+  updateKeyIdentifier,
 } from "./checkoutService.js";
 import { requireModule } from "./tenantService.js";
 
@@ -109,4 +112,67 @@ test("QR identifier resolves room, updates room state and is idempotent", async 
   assert.equal(second.duplicate, true);
   assert.equal(updatedRoom.status, "ready_for_cleaning");
   assert.equal(Object.values(database.data.checkoutEvents).length, 1);
+});
+
+test("direct checkout URL is normalized to the secure key identifier", () => {
+  assert.equal(
+    checkoutIdentifierFromValue("https://hotelapp.charlydob.com/checkout/ck_securetoken"),
+    "ck_securetoken",
+  );
+  assert.equal(checkoutIdentifierFromValue("ck_securetoken"), "ck_securetoken");
+});
+
+test("valid QR can be resolved without registering checkout", async () => {
+  const database = createFakeDatabase({
+    tenants: {
+      hotelA: { id: "hotelA", name: "Hotel A", slug: "hotel-a", active: true },
+    },
+    tenantModules: {
+      hotelA: { checkout: { moduleId: "checkout", enabled: true } },
+    },
+  });
+  const room = await createRoom(database, "hotelA", { number: "109" });
+  const key = await createKeyIdentifier(database, "hotelA", { roomId: room.id });
+
+  const target = await resolveCheckoutByIdentifier(database, key.identifier, "qr");
+
+  assert.equal(target.room.number, "109");
+  assert.equal(target.tenant.slug, "hotel-a");
+  assert.equal(Object.values(database.data.checkoutEvents).length, 0);
+});
+
+test("invalid QR is rejected", async () => {
+  const database = createFakeDatabase();
+
+  await assert.rejects(
+    () => resolveCheckoutByIdentifier(database, "not-a-real-key", "qr"),
+    (error) => {
+      assert.equal(error.statusCode, 404);
+      assert.equal(error.code, "QR_INVALID");
+      return true;
+    },
+  );
+});
+
+test("deactivated QR is rejected distinctly", async () => {
+  const database = createFakeDatabase({
+    tenants: {
+      hotelA: { id: "hotelA", name: "Hotel A", slug: "hotel-a", active: true },
+    },
+    tenantModules: {
+      hotelA: { checkout: { moduleId: "checkout", enabled: true } },
+    },
+  });
+  const room = await createRoom(database, "hotelA", { number: "109" });
+  const key = await createKeyIdentifier(database, "hotelA", { roomId: room.id });
+  await updateKeyIdentifier(database, "hotelA", key.id, { active: false });
+
+  await assert.rejects(
+    () => resolveCheckoutByIdentifier(database, key.identifier, "qr"),
+    (error) => {
+      assert.equal(error.statusCode, 410);
+      assert.equal(error.code, "QR_DEACTIVATED");
+      return true;
+    },
+  );
 });

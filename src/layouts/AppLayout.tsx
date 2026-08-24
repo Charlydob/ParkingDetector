@@ -50,6 +50,8 @@ export function AppLayout({ route, onRouteChange, enabledModules, children }: Ap
   const activeTenantRole = session?.memberships.find(
     (membership) => membership.tenantId === activeTenantId,
   )?.role || (session?.isPlatformAdmin && activeTenantId ? "platform_admin" : undefined);
+  const canConfigureTenant =
+    activeTenantRole === "tenant_admin" || activeTenantRole === "platform_admin";
 
   function navButton(target: AppRoute, label: string) {
     const Icon = routeIcons[target];
@@ -122,13 +124,16 @@ export function AppLayout({ route, onRouteChange, enabledModules, children }: Ap
               <span>Operations</span>
               {enabled.some((module) => module.id === "parking") && navButton("parking", "Parking")}
               {enabled.some((module) => module.id === "checkout") && navButton("checkout", "Checkout")}
-              <span>Management</span>
-              {navButton("reservations", "Reservations")}
-              <span>System</span>
-              {navButton("integrations", "Integrations")}
-              {navButton("settings", "Settings")}
-              {(activeTenantRole === "tenant_admin" || activeTenantRole === "platform_admin") &&
-                navButton("users", "Users")}
+              {canConfigureTenant && (
+                <>
+                  <span>Management</span>
+                  {navButton("reservations", "Reservations")}
+                  <span>System</span>
+                  {navButton("integrations", "Integrations")}
+                  {navButton("settings", "Settings")}
+                  {navButton("users", "Users")}
+                </>
+              )}
             </>
           )}
           {session?.isPlatformAdmin && (

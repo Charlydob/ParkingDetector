@@ -9,7 +9,7 @@ export type ModuleId =
   | "energy"
   | "maintenance";
 
-export type TenantRole = "tenant_admin" | "staff";
+export type TenantRole = "tenant_admin" | "manager" | "staff";
 export type GlobalRole = "platform_admin";
 
 export interface ModuleDefinition {

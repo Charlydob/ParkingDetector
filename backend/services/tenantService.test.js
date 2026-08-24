@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getAuthSession } from "./tenantService.js";
+import { ensureDemoTenant, getAuthSession } from "./tenantService.js";
 
 function createFakeDatabase(initial = {}) {
   const data = {
@@ -8,6 +8,7 @@ function createFakeDatabase(initial = {}) {
     users: {},
     memberships: {},
     tenantModules: {},
+    tenantSettings: {},
     ...initial,
   };
 
@@ -37,8 +38,26 @@ function createFakeDatabase(initial = {}) {
         ]),
       );
     },
+    async setTenantModule(tenantId, moduleId, enabled) {
+      data.tenantModules[tenantId] ||= {};
+      data.tenantModules[tenantId][moduleId] = { tenantId, moduleId, enabled };
+      return data.tenantModules[tenantId][moduleId];
+    },
   };
 }
+
+test("Demo Hotel is created as a separate tenant with implemented modules", async () => {
+  const database = createFakeDatabase();
+
+  const tenant = await ensureDemoTenant(database);
+
+  assert.equal(tenant.name, "Demo Hotel");
+  assert.equal(tenant.slug, "demo-hotel");
+  assert.equal(Object.values(database.data.memberships).length, 0);
+  assert.equal(database.data.tenantModules[tenant.id].parking.enabled, true);
+  assert.equal(database.data.tenantModules[tenant.id].checkout.enabled, true);
+  assert.equal(database.data.tenantSettings[tenant.id].frigate.baseUrl, "http://frigate:5000");
+});
 
 test("authenticated platform_admin with no tenant can create a safe session", async () => {
   const database = createFakeDatabase({

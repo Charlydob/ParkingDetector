@@ -11,7 +11,8 @@ const VALID_ROOM_STATUSES = new Set([
   "ready",
   "unknown",
 ]);
-const VALID_SOURCES = new Set(["qr", "nfc", "manual", "pms", "other"]);
+const VALID_SOURCES = new Set(["qr", "nfc", "rfid", "manual", "pms", "other"]);
+const VALID_KEY_TYPES = new Set(["qr", "nfc", "rfid"]);
 
 function now() {
   return new Date().toISOString();
@@ -23,6 +24,27 @@ function cleanString(value) {
 
 function token() {
   return `ck_${randomUUID().replace(/-/g, "")}${randomBytes(8).toString("hex")}`;
+}
+
+export function checkoutIdentifierFromValue(value) {
+  const raw = cleanString(value);
+
+  if (!raw) {
+    return "";
+  }
+
+  try {
+    const parsed = new URL(raw, "https://checkout.local");
+    const directMatch = parsed.pathname.match(/^\/checkout\/([^/]+)$/);
+
+    if (directMatch) {
+      return decodeURIComponent(directMatch[1]);
+    }
+  } catch {
+    return raw;
+  }
+
+  return raw;
 }
 
 function withinCooldown(event) {
@@ -113,7 +135,7 @@ export async function createKeyIdentifier(database, tenantId, input) {
     id: randomUUID(),
     tenantId,
     roomId: room.id,
-    type: input.type === "nfc" ? "nfc" : "qr",
+    type: VALID_KEY_TYPES.has(input.type) ? input.type : "qr",
     identifier: cleanString(input.identifier) || token(),
     label: cleanString(input.label) || `Room ${room.number}`,
     active: input.active !== false,
@@ -137,6 +159,7 @@ export async function updateKeyIdentifier(database, tenantId, keyId, patch) {
   const key = {
     ...current,
     roomId: cleanString(patch.roomId) || current.roomId,
+    type: VALID_KEY_TYPES.has(patch.type) ? patch.type : current.type,
     label: patch.label === undefined ? current.label : cleanString(patch.label),
     active: patch.active === undefined ? current.active !== false : Boolean(patch.active),
     identifier: patch.regenerate ? token() : current.identifier,
@@ -221,23 +244,73 @@ export async function registerCheckout(database, tenantId, roomId, source, optio
   };
 }
 
-export async function registerCheckoutByIdentifier(database, identifier, type = "qr") {
-  const cleanIdentifier = cleanString(identifier);
+async function findKeyByIdentifier(database, identifier, type = "qr") {
+  const cleanIdentifier = checkoutIdentifierFromValue(identifier);
   const matches = (await database.listRecords("keyIdentifiers")).filter(
-    (key) =>
-      key.identifier === cleanIdentifier &&
-      key.type === type &&
-      key.active !== false,
+    (key) => key.identifier === cleanIdentifier && key.type === type,
   );
-
   const key = matches[0];
 
   if (!key) {
-    const error = new Error("Checkout key is invalid or inactive.");
+    const error = new Error("Checkout QR is invalid.");
     error.statusCode = 404;
+    error.code = "QR_INVALID";
     throw error;
   }
 
+  if (key.active === false) {
+    const error = new Error("Checkout QR is deactivated.");
+    error.statusCode = 410;
+    error.code = "QR_DEACTIVATED";
+    throw error;
+  }
+
+  return key;
+}
+
+export async function resolveCheckoutByIdentifier(database, identifier, type = "qr") {
+  const key = await findKeyByIdentifier(database, identifier, type);
+  const [room, tenant, modules] = await Promise.all([
+    database.getTenantRecord("rooms", key.tenantId, key.roomId),
+    database.getRecord("tenants", key.tenantId),
+    database.getTenantModules(key.tenantId),
+  ]);
+
+  if (!tenant || tenant.active === false || !modules.checkout) {
+    const error = new Error("Hotel checkout is not available.");
+    error.statusCode = 404;
+    error.code = "CHECKOUT_UNAVAILABLE";
+    throw error;
+  }
+
+  if (!room || room.active === false) {
+    const error = new Error("Room is not available for checkout.");
+    error.statusCode = 404;
+    error.code = "ROOM_UNAVAILABLE";
+    throw error;
+  }
+
+  return {
+    key: {
+      id: key.id,
+      type: key.type,
+      label: key.label || "",
+    },
+    room: {
+      id: room.id,
+      number: room.number,
+      name: room.name || "",
+      status: room.status,
+    },
+    tenant: {
+      name: tenant.name,
+      slug: tenant.slug,
+    },
+  };
+}
+
+export async function registerCheckoutByIdentifier(database, identifier, type = "qr") {
+  const key = await findKeyByIdentifier(database, identifier, type);
   return registerCheckout(database, key.tenantId, key.roomId, type, {
     sourceIdentifier: key.identifier,
     metadata: { keyId: key.id },

@@ -4,8 +4,10 @@ import { useAuth } from "../../auth/AuthContext";
 import { SettingsIntegrations } from "../../components/SettingsIntegrations";
 import {
   getBackendStatus,
+  getAppVersion,
   getIntegrationSettings,
   updateTenantProfile,
+  type AppVersion,
   type BackendStatus,
   type IntegrationSettings,
 } from "../../services/backendApi";
@@ -17,6 +19,7 @@ export function SettingsPage() {
   const [notice, setNotice] = useState("");
   const [backendStatus, setBackendStatus] = useState<BackendStatus>();
   const [integrationSettings, setIntegrationSettings] = useState<IntegrationSettings>();
+  const [appVersion, setAppVersion] = useState<AppVersion>();
   const [backendUrl, setActiveBackendUrl] = useState(getBackendUrl());
   const activeTenant = session?.tenants.find((tenant) => tenant.id === activeTenantId);
   const activeTenantRole =
@@ -31,8 +34,14 @@ export function SettingsPage() {
   const [phone, setPhone] = useState("");
 
   async function refreshBackendState() {
-    setBackendStatus(await getBackendStatus());
-    setIntegrationSettings(await getIntegrationSettings());
+    const [nextStatus, nextSettings, nextVersion] = await Promise.all([
+      getBackendStatus(),
+      getIntegrationSettings(),
+      getAppVersion(),
+    ]);
+    setBackendStatus(nextStatus);
+    setIntegrationSettings(nextSettings);
+    setAppVersion(nextVersion);
   }
 
   useEffect(() => {
@@ -127,6 +136,17 @@ export function SettingsPage() {
           await refreshBackendState();
         }}
       />
+      <section className="panel">
+        <div className="section-heading">
+          <h2>About</h2>
+        </div>
+        <div className="meta-list settings-form">
+          <span>Version</span>
+          <strong>{appVersion?.version || "unknown"}</strong>
+          <span>Environment</span>
+          <strong>{appVersion?.environment || "unknown"}</strong>
+        </div>
+      </section>
     </section>
   );
 }

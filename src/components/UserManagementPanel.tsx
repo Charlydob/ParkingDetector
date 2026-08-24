@@ -116,6 +116,7 @@ export function UserManagementPanel({
             <span>Role</span>
             <select value={role} onChange={(event) => setRole(event.target.value as TenantRole)}>
               <option value="staff">Staff</option>
+              <option value="manager">Manager</option>
               <option value="tenant_admin">Tenant admin</option>
             </select>
           </label>
@@ -162,6 +163,7 @@ export function UserManagementPanel({
                   disabled={busy !== ""}
                 >
                   <option value="staff">Staff</option>
+                  <option value="manager">Manager</option>
                   <option value="tenant_admin">Tenant admin</option>
                 </select>
                 <span>{member.status}</span>

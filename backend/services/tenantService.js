@@ -1,12 +1,21 @@
 import { IMPLEMENTED_MODULE_IDS, MODULE_REGISTRY, isKnownModule } from "../moduleRegistry.js";
 import { randomUUID } from "node:crypto";
-import { createEmptyTenantSettings } from "./tenantSettingsService.js";
+import {
+  createEmptyTenantSettings,
+  getTenantSettings,
+  updateTenantSettings,
+} from "./tenantSettingsService.js";
 import argon2 from "argon2";
 
 export const DEFAULT_TENANT_ID =
   process.env.DEFAULT_TENANT_ID || "00000000-0000-4000-8000-000000000001";
 const DEFAULT_TENANT_SLUG = process.env.DEFAULT_TENANT_SLUG || "default-hotel";
 const DEFAULT_TENANT_NAME = process.env.DEFAULT_TENANT_NAME || "Default Hotel";
+export const DEMO_TENANT_ID =
+  process.env.DEMO_TENANT_ID || "00000000-0000-4000-8000-000000000002";
+const DEMO_TENANT_SLUG = "demo-hotel";
+const DEMO_TENANT_NAME = "Demo Hotel";
+const DEMO_FRIGATE_BASE_URL = "http://frigate:5000";
 
 function now() {
   return new Date().toISOString();
@@ -73,6 +82,8 @@ export async function ensureBootstrapTenant(database) {
     }
   }
 
+  await ensureDemoTenant(database);
+
   const platformAdmins = (await database.listRecords("users")).filter(
     (user) => user.globalRole === "platform_admin",
   );
@@ -100,6 +111,69 @@ export async function ensureBootstrapTenant(database) {
     createdAt: timestamp,
     updatedAt: timestamp,
   });
+}
+
+export async function ensureDemoTenant(database) {
+  const timestamp = now();
+  const tenants = await database.listRecords("tenants");
+  const existing =
+    tenants.find((tenant) => tenant.slug === DEMO_TENANT_SLUG) ||
+    (await database.getRecord("tenants", DEMO_TENANT_ID));
+  const tenantId = existing?.id || DEMO_TENANT_ID;
+
+  if (!existing) {
+    await database.setRecord("tenants", tenantId, {
+      id: tenantId,
+      name: DEMO_TENANT_NAME,
+      slug: DEMO_TENANT_SLUG,
+      active: true,
+      basicInfo: {
+        displayName: DEMO_TENANT_NAME,
+        address: "",
+        contactEmail: "",
+        phone: "",
+        timezone: "",
+        demo: true,
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+  } else if (existing.name !== DEMO_TENANT_NAME || existing.slug !== DEMO_TENANT_SLUG) {
+    await database.setRecord("tenants", tenantId, {
+      ...existing,
+      name: DEMO_TENANT_NAME,
+      slug: DEMO_TENANT_SLUG,
+      basicInfo: {
+        ...(existing.basicInfo || {}),
+        displayName: existing.basicInfo?.displayName || DEMO_TENANT_NAME,
+        demo: true,
+      },
+      updatedAt: timestamp,
+    });
+  }
+
+  for (const moduleId of IMPLEMENTED_MODULE_IDS) {
+    await database.setTenantModule(tenantId, moduleId, true);
+  }
+
+  const settings = await getTenantSettings(database, tenantId);
+  if (!settings.createdAt) {
+    await createEmptyTenantSettings(database, tenantId);
+  }
+
+  const nextSettings = await getTenantSettings(database, tenantId);
+  if (!cleanString(nextSettings.frigate?.baseUrl)) {
+    await updateTenantSettings(database, tenantId, {
+      frigate: {
+        enabled: true,
+        baseUrl: DEMO_FRIGATE_BASE_URL,
+        pollIntervalMs: nextSettings.frigate?.pollIntervalMs || 5000,
+        cameras: nextSettings.frigate?.cameras || [],
+      },
+    });
+  }
+
+  return database.getRecord("tenants", tenantId);
 }
 
 export async function syncUserFromAuth(database, authUser) {
@@ -250,6 +324,16 @@ export async function createTenant(database, input) {
   }
 
   await createEmptyTenantSettings(database, id);
+  if (tenant.slug === DEMO_TENANT_SLUG) {
+    await updateTenantSettings(database, id, {
+      frigate: {
+        enabled: true,
+        baseUrl: DEMO_FRIGATE_BASE_URL,
+        pollIntervalMs: 5000,
+        cameras: [],
+      },
+    });
+  }
   return tenant;
 }
 
@@ -302,9 +386,22 @@ export async function updateTenant(database, tenantId, patch) {
   return next;
 }
 
+export async function deleteTenant(database, tenantId) {
+  const current = await database.getRecord("tenants", tenantId);
+
+  if (!current) {
+    const error = new Error("Tenant not found.");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  await database.deleteRecord("tenants", tenantId);
+  return { success: true };
+}
+
 export async function assignUserToTenant(database, tenantId, input) {
   const userId = cleanString(input.userId);
-  const role = input.role === "tenant_admin" ? "tenant_admin" : "staff";
+  const role = ["tenant_admin", "manager", "staff"].includes(input.role) ? input.role : "staff";
 
   if (!userId) {
     const error = new Error("userId is required.");

@@ -27,17 +27,7 @@ export async function sendCheckoutNotification({ tenantSettings, room, event }) 
     return { sent: false, skipped: true };
   }
 
-  const time = new Intl.DateTimeFormat("en-GB", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).format(new Date(event.timestamp));
-  const text = [
-    `Room ${room.number} checked out.`,
-    "Ready for cleaning.",
-    `Source: ${event.source.toUpperCase()}`,
-    `Time: ${time}`,
-  ].join("\n");
+  const text = `Room ${room.number} - checkout completed.`;
 
   try {
     const response = await fetch(

@@ -3,8 +3,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
     environment:
       NODE_ENV: production
+      GIT_SHA: ${GIT_SHA:-unknown}
       APP_DOMAIN: ${APP_DOMAIN:-hotelapp.charlydob.com}
       APP_ORIGIN: ${APP_ORIGIN:-https://hotelapp.charlydob.com}
       DATABASE_URL: ${DATABASE_URL:-}
@@ -48,6 +51,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.frontend.hetzner
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
     depends_on:
       backend:
         condition: service_started

@@ -1,9 +1,10 @@
-import { ExternalLink, FlaskConical, Plus, RefreshCw, Save } from "lucide-react";
+import { ExternalLink, FlaskConical, Plus, RefreshCw, Save, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { UserManagementPanel } from "../../components/UserManagementPanel";
 import {
   createTenant,
   createAdminTenantInvitation,
+  deleteAdminTenant,
   getAdminTenantInvitationLink,
   getAdminTenants,
   regenerateAdminTenantInvitation,
@@ -48,22 +49,40 @@ export function AdminPage() {
   }
 
   async function addDemoTenant() {
-    const suffix = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-    await createTenant({
-      name: "Demo Hotel",
-      slug: `demo-hotel-${suffix}`,
-      modules: {
-        parking: true,
-        checkout: true,
-      },
-    });
-    setNotice("Demo tenant created.");
-    await reload();
+    try {
+      await createTenant({
+        name: "Demo Hotel",
+        slug: "demo-hotel",
+        modules: {
+          parking: true,
+          checkout: true,
+        },
+      });
+      setNotice("Demo tenant created.");
+      await reload();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Demo tenant already exists.");
+      await reload();
+    }
   }
 
   async function toggleModule(tenant: AdminTenantSummary, moduleId: ModuleId) {
     await setAdminTenantModule(tenant.id, moduleId, !tenant.modules[moduleId]);
     await reload();
+  }
+
+  async function removeTenant(tenant: AdminTenantSummary) {
+    if (!window.confirm(`Delete ${tenant.name}? This cannot be undone.`)) {
+      return;
+    }
+
+    try {
+      await deleteAdminTenant(tenant.id);
+      setNotice("Tenant deleted.");
+      await reload();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not delete tenant.");
+    }
   }
 
   function openHotel(tenant: AdminTenantSummary) {
@@ -151,6 +170,10 @@ export function AdminPage() {
                   <button type="button" onClick={() => openHotelIntegrations(tenant)}>
                     <ExternalLink size={15} />
                     Integrations
+                  </button>
+                  <button type="button" onClick={() => void removeTenant(tenant)}>
+                    <Trash2 size={15} />
+                    Delete
                   </button>
                 </div>
               </div>

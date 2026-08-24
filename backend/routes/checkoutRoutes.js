@@ -6,6 +6,7 @@ import {
   listKeyIdentifiers,
   registerCheckout,
   registerCheckoutByIdentifier,
+  resolveCheckoutByIdentifier,
   updateKeyIdentifier,
   updateRoom,
 } from "../services/checkoutService.js";
@@ -16,6 +17,10 @@ function publicBaseUrl(request) {
     process.env.PUBLIC_APP_URL ||
     `${request.headers["x-forwarded-proto"] || "http"}://${request.headers.host}`
   ).replace(/\/+$/g, "");
+}
+
+function keyCheckoutUrl(request, key) {
+  return `${publicBaseUrl(request)}/checkout/${encodeURIComponent(key.identifier)}`;
 }
 
 export async function handleCheckoutRoute({ request, pathname, parsedUrl, body, context }) {
@@ -63,7 +68,8 @@ export async function handleCheckoutRoute({ request, pathname, parsedUrl, body, 
       status: 201,
       payload: {
         ...key,
-        qrDataUrl: await QRCode.toDataURL(key.identifier),
+        checkoutUrl: keyCheckoutUrl(request, key),
+        qrDataUrl: await QRCode.toDataURL(keyCheckoutUrl(request, key)),
       },
     };
   }
@@ -81,7 +87,8 @@ export async function handleCheckoutRoute({ request, pathname, parsedUrl, body, 
       status: 200,
       payload: {
         ...key,
-        qrDataUrl: await QRCode.toDataURL(key.identifier),
+        checkoutUrl: keyCheckoutUrl(request, key),
+        qrDataUrl: await QRCode.toDataURL(keyCheckoutUrl(request, key)),
       },
     };
   }
@@ -100,7 +107,13 @@ export async function handleCheckoutRoute({ request, pathname, parsedUrl, body, 
       throw error;
     }
 
-    return { status: 200, payload: { qrDataUrl: await QRCode.toDataURL(key.identifier) } };
+    return {
+      status: 200,
+      payload: {
+        checkoutUrl: keyCheckoutUrl(request, key),
+        qrDataUrl: await QRCode.toDataURL(keyCheckoutUrl(request, key)),
+      },
+    };
   }
 
   if (request.method === "POST" && pathname === "/api/checkout/manual") {
@@ -151,11 +164,23 @@ export async function handlePublicCheckoutRoute({ request, pathname, context }) 
   }
 
   const checkoutMatch = pathname.match(/^\/api\/public\/checkout\/([^/]+)$/);
+  if (request.method === "GET" && checkoutMatch) {
+    return {
+      status: 200,
+      payload: await resolveCheckoutByIdentifier(
+        database,
+        decodeURIComponent(checkoutMatch[1]),
+        "qr",
+      ),
+    };
+  }
+
   if (request.method === "POST" && checkoutMatch) {
-    const ip = request.socket.remoteAddress || "unknown";
+    const ip = request.socket?.remoteAddress || "unknown";
     if (!publicCheckoutLimiter.allow(ip)) {
       const error = new Error("Too many checkout attempts. Please wait a moment.");
       error.statusCode = 429;
+      error.code = "RATE_LIMITED";
       throw error;
     }
 
@@ -171,6 +196,9 @@ export async function handlePublicCheckoutRoute({ request, pathname, context }) 
         success: true,
         duplicate: result.duplicate,
         timestamp: result.event.timestamp,
+        room: {
+          number: result.room.number,
+        },
       },
     };
   }

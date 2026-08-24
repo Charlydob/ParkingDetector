@@ -20,6 +20,7 @@ import {
 } from "./routes/checkoutRoutes.js";
 import { handleInvitationRoute } from "./routes/invitationRoutes.js";
 import { handleUserManagementRoute } from "./routes/userManagementRoutes.js";
+import { handleVersionRoute } from "./routes/versionRoutes.js";
 import {
   DEFAULT_TENANT_ID,
   ensureBootstrapTenant,
@@ -432,6 +433,11 @@ const server = createServer(async (request, response) => {
         ok: databaseConnected,
         database: { connected: databaseConnected },
       });
+      return;
+    }
+
+    const versionResult = handleVersionRoute({ request, pathname });
+    if (sendRouteResult(response, versionResult)) {
       return;
     }
 
@@ -1186,6 +1192,7 @@ const server = createServer(async (request, response) => {
     logUnexpectedError("HTTP", error);
     sendJson(response, error.statusCode || 500, {
       error: error instanceof Error ? error.message : "Unexpected server error",
+      ...(error?.code ? { code: error.code } : {}),
     });
   }
 });
