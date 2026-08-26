@@ -112,6 +112,8 @@ function createFakeDatabase(initial = {}) {
         status: "ready_for_cleaning",
         lastCheckoutAt: timestamp,
         lastCheckoutSource: input.source,
+        checkoutDueDate: null,
+        checkoutDueSource: null,
         updatedAt: timestamp,
       };
       return { duplicate: false, event, room: data.rooms[room.id] };
@@ -388,6 +390,46 @@ test("Telegram housekeeping board persists Telegram numeric message_id for later
   assert.equal(board.board.messageId, 12345);
   assert.equal(board.board.chatId, "-100123456789");
   assert.equal(board.board.threadId, 12);
+});
+
+test("Telegram checkout today follows the manual due date regardless of room status", async () => {
+  const database = createFakeDatabase({
+    tenants: {
+      "hotel-a": { id: "hotel-a", name: "Hotel A", slug: "hotel-a", active: true },
+    },
+  });
+  const today = new Date().toISOString().slice(0, 10);
+  const occupied = await createRoom(database, "hotel-a", { number: "101", status: "occupied" });
+  const ready = await createRoom(database, "hotel-a", { number: "102", status: "ready" });
+  const unknown = await createRoom(database, "hotel-a", { number: "103", status: "unknown" });
+
+  for (const room of [occupied, ready, unknown]) {
+    database.data.rooms[room.id] = {
+      ...database.data.rooms[room.id],
+      checkoutDueDate: today,
+      checkoutDueSource: "manual",
+    };
+  }
+
+  const selectedBoard = await getHousekeepingBoard(database, { tenantId: "hotel-a" });
+
+  assert.deepEqual(
+    selectedBoard.checkoutToday.map((room) => room.roomId),
+    [occupied.id, ready.id, unknown.id],
+  );
+
+  const checkout = await registerCheckout(database, "hotel-a", ready.id, "manual", {
+    sourceIdentifier: "manual:ready-room",
+  });
+  const checkedOutBoard = await getHousekeepingBoard(database, { tenantId: "hotel-a" });
+
+  assert.deepEqual(
+    checkedOutBoard.checkoutToday.map((room) => room.roomId),
+    [occupied.id, unknown.id],
+  );
+  assert.equal(checkedOutBoard.pendingCleaning.length, 1);
+  assert.equal(checkedOutBoard.pendingCleaning[0].roomId, ready.id);
+  assert.equal(checkedOutBoard.pendingCleaning[0].eventId, checkout.event.id);
 });
 
 test("Telegram housekeeping board keeps numeric message id across checkout refreshes", async () => {

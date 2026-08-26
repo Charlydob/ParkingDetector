@@ -221,7 +221,7 @@ export async function getHousekeepingBoard(database, input = {}) {
       };
     });
   const checkoutToday = rooms
-    .filter((room) => room.active !== false && room.status === "occupied" &&
+    .filter((room) => room.active !== false &&
       String(room.checkoutDueDate || "").slice(0, 10) === today)
     .sort((left, right) => String(left.number).localeCompare(String(right.number)))
     .map((room) => ({
