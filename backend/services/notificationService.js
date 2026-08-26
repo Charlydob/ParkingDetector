@@ -227,6 +227,58 @@ export async function sendCheckoutNotification({
   }
 }
 
+export async function sendHousekeepingBoardRefresh({ tenant, tenantSettings }) {
+  const telegram = tenantSettings?.notifications?.telegram || tenantSettings?.telegram || {};
+
+  if (!telegram.enabled || !cleanTelegramId(telegram.chatId)) {
+    return { sent: false, skipped: true };
+  }
+
+  const webhookUrl = cleanString(process.env.N8N_CHECKOUT_WEBHOOK_URL);
+  const webhookSecret = cleanString(process.env.N8N_CHECKOUT_WEBHOOK_SECRET);
+
+  if (!webhookUrl || !webhookSecret) {
+    console.warn("[Notifications] n8n checkout webhook is not configured.");
+    return { sent: false, skipped: true };
+  }
+
+  const payload = {
+    event: "housekeeping.board.refresh",
+    tenant: {
+      id: tenant?.id || tenantSettings?.tenantId || "",
+      slug: tenant?.slug || "",
+      name: tenant?.name || "",
+    },
+    notification: {
+      chatId: cleanTelegramId(telegram.chatId),
+      timezone: "Europe/Zurich",
+    },
+    reason: "checkout_today_changed",
+    timestamp: new Date().toISOString(),
+  };
+
+  try {
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-HotelApp-Secret": webhookSecret,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      throw new Error(`n8n HTTP ${response.status}`);
+    }
+
+    return { sent: true, httpStatus: response.status };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "unknown error";
+    console.warn(`[Notifications] n8n housekeeping board refresh failed: ${message}`);
+    return { sent: false, error: message };
+  }
+}
+
 export async function sendTestCheckoutNotification({ database, tenant, tenantSettings }) {
   const event = {
     id: `test-${Date.now()}`,

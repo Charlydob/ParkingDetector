@@ -1,6 +1,7 @@
 import {
   getSavedHousekeepingBoard,
   sendCheckoutNotification,
+  sendHousekeepingBoardRefresh,
 } from "./notificationService.js";
 import { getTenantSettings } from "./tenantSettingsService.js";
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
@@ -203,6 +204,18 @@ export async function setTodayCheckoutRooms(database, tenantId, roomIds, date) {
       updatedAt: now(),
     });
   }));
+
+  void Promise.all([
+    database.getRecord("tenants", tenantId),
+    getTenantSettings(database, tenantId),
+  ])
+    .then(([tenant, tenantSettings]) =>
+      sendHousekeepingBoardRefresh({ tenant, tenantSettings }),
+    )
+    .catch((error) => {
+      const message = error instanceof Error ? error.message : "unknown error";
+      console.warn(`[Notifications] housekeeping board refresh setup failed: ${message}`);
+    });
 
   return {
     date,
