@@ -16,6 +16,7 @@ import {
   registerCheckout,
   registerCheckoutByIdentifier,
   resolveCheckoutByIdentifier,
+  setTodayCheckoutRooms,
   updateKeyIdentifier,
   updateRoom,
 } from "./checkoutService.js";
@@ -310,6 +311,59 @@ test("module entitlement is enforced per tenant", async () => {
     () => requireModule(database, { activeTenantId: "hotelB" }, "checkout"),
     /not enabled/,
   );
+});
+
+test("setting today's checkout rooms refreshes the Telegram housekeeping board", async () => {
+  const calls = [];
+  const database = createNotificationDatabase();
+  const firstRoom = await createRoom(database, "hotelA", { number: "204" });
+  const secondRoom = await createRoom(database, "hotelA", { number: "206" });
+
+  await withN8nCheckoutWebhook(async (...args) => {
+    calls.push(args);
+    return { ok: true, status: 200 };
+  }, async () => {
+    const result = await setTodayCheckoutRooms(
+      database,
+      "hotelA",
+      [firstRoom.id, secondRoom.id],
+      "2026-08-26",
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(result.roomIds, [firstRoom.id, secondRoom.id]);
+    assert.equal(database.data.rooms[firstRoom.id].checkoutDueDate, "2026-08-26");
+    assert.equal(database.data.rooms[secondRoom.id].checkoutDueDate, "2026-08-26");
+    assert.equal(calls.length, 1);
+
+    const webhook = parseWebhookCall(calls[0]);
+    assert.equal(webhook.url, "https://n8n.example.test/webhook/checkout");
+    assert.equal(webhook.init.headers["X-HotelApp-Secret"], "shared-secret");
+    assert.deepEqual(webhook.payload, {
+      event: "housekeeping.board.refresh",
+      tenant: { id: "hotelA", slug: "hotel-a", name: "Hotel A" },
+      notification: { chatId: "chat-a", timezone: "Europe/Zurich" },
+      reason: "checkout_today_changed",
+      timestamp: webhook.payload.timestamp,
+    });
+    assert.ok(!Number.isNaN(Date.parse(webhook.payload.timestamp)));
+    assert.equal(Object.values(database.data.checkoutEvents).length, 0);
+  });
+});
+
+test("setting today's checkout rooms succeeds when the board refresh fails", async () => {
+  const database = createNotificationDatabase();
+  const room = await createRoom(database, "hotelA", { number: "204" });
+
+  await withN8nCheckoutWebhook(async () => {
+    throw new Error("n8n unavailable");
+  }, async () => {
+    await assert.doesNotReject(() =>
+      setTodayCheckoutRooms(database, "hotelA", [room.id], "2026-08-26"),
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(database.data.rooms[room.id].checkoutDueDate, "2026-08-26");
+  });
 });
 
 test("QR checkout sends n8n webhook", async () => {
