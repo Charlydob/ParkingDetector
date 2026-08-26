@@ -1,4 +1,4 @@
-import { Download, KeyRound, Plus, Printer, QrCode, RefreshCw, Trash2 } from "lucide-react";
+import { CalendarCheck, Download, KeyRound, Plus, Printer, QrCode, RefreshCw, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   createCheckoutKey,
@@ -10,6 +10,7 @@ import {
   getCheckoutKeys,
   getCheckoutOverview,
   manualCheckout,
+  setTodayCheckoutRooms,
   updateCheckoutKey,
   updateRoom,
 } from "../../services/backendApi";
@@ -177,6 +178,8 @@ async function printableQrDataUrl({
 
 export function CheckoutPage() {
   const [overview, setOverview] = useState<CheckoutOverview>();
+  const [todayModalOpen, setTodayModalOpen] = useState(false);
+  const [todayRoomIds, setTodayRoomIds] = useState<Set<string>>(new Set());
   const [keys, setKeys] = useState<KeyIdentifier[]>([]);
   const [filter, setFilter] = useState<"all" | RoomStatus>("all");
   const [tab, setTab] = useState<"board" | "settings">("board");
@@ -356,6 +359,20 @@ export function CheckoutPage() {
     await reload();
   }
 
+  function openTodayCheckouts() {
+    const today = overview?.todayDate;
+    setTodayRoomIds(new Set(activeRooms.filter((room) =>
+      room.checkoutDueDate?.slice(0, 10) === today).map((room) => room.id)));
+    setTodayModalOpen(true);
+  }
+
+  async function saveTodayCheckouts() {
+    await setTodayCheckoutRooms([...todayRoomIds]);
+    setTodayModalOpen(false);
+    setNotice("Today's expected check-outs were saved.");
+    await reload();
+  }
+
   function downloadQr(item = qrPreview) {
     if (!item) {
       return;
@@ -406,6 +423,10 @@ export function CheckoutPage() {
           <p>Guest key checkout events and room readiness.</p>
         </div>
         <div className="button-row">
+          <button type="button" className="primary" onClick={openTodayCheckouts}>
+            <CalendarCheck size={15} />
+            Check-outs today
+          </button>
           <button type="button" onClick={() => void reload()}>
             <RefreshCw size={15} />
             Refresh
@@ -414,6 +435,29 @@ export function CheckoutPage() {
       </div>
 
       {notice && <div className={notice.includes("Could not") ? "notice error" : "notice"}>{notice}</div>}
+
+      {todayModalOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="checkout-today-modal" role="dialog" aria-modal="true" aria-labelledby="checkout-today-title">
+            <button className="modal-close" type="button" aria-label="Close" onClick={() => setTodayModalOpen(false)}><X size={16} /></button>
+            <h2 id="checkout-today-title">Check-outs today</h2>
+            <p>Select every room expected to check out on {overview?.todayDate}.</p>
+            <div className="checkout-today-room-grid">
+              {activeRooms.map((room) => {
+                const selected = todayRoomIds.has(room.id);
+                return <button key={room.id} type="button" className={selected ? "selected" : ""}
+                  aria-pressed={selected} onClick={() => setTodayRoomIds((current) => {
+                    const next = new Set(current); selected ? next.delete(room.id) : next.add(room.id); return next;
+                  })}>{room.number}</button>;
+              })}
+            </div>
+            <div className="button-row checkout-today-actions">
+              <button type="button" onClick={() => setTodayModalOpen(false)}>Cancel</button>
+              <button type="button" className="primary" onClick={() => void saveTodayCheckouts()}>Save</button>
+            </div>
+          </section>
+        </div>
+      )}
 
       <div className="segmented-control compact" role="tablist" aria-label="Checkout views">
         <button className={tab === "board" ? "active" : ""} type="button" onClick={() => setTab("board")}>

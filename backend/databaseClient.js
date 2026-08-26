@@ -50,6 +50,9 @@ const DATE_FIELDS = new Set([
   "consumedAt",
   "departureAt",
   "deletedAt",
+  "checkoutDueDate",
+  "lastCleanedAt",
+  "telegramMessageDeletedAt",
 ]);
 
 const JSON_FIELDS = new Set([
@@ -525,6 +528,8 @@ export function createDatabaseClient() {
               status: "ready_for_cleaning",
               lastCheckoutAt: timestamp,
               lastCheckoutSource: input.source,
+              checkoutDueDate: null,
+              checkoutDueSource: null,
               updatedAt: timestamp,
             },
           });

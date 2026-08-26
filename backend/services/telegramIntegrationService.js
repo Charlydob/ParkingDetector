@@ -180,6 +180,18 @@ function confirmationKey({ chatId, telegramUserId, eventId }) {
   return `${chatId}:${telegramUserId}:${eventId}`;
 }
 
+function localDate(value, timezone) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone || "UTC",
+    year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(date);
+  const part = (type) => parts.find((item) => item.type === type)?.value;
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
 export async function getHousekeepingBoard(database, input = {}) {
   const tenant = await requireTelegramTenant(database, input);
   const [rooms, events, boards] = await Promise.all([
@@ -187,10 +199,13 @@ export async function getHousekeepingBoard(database, input = {}) {
     database.listTenantRecords("checkoutEvents", tenant.id),
     getDiagnosticValue(database, BOARD_DIAGNOSTIC_KEY),
   ]);
-  const eventByRoom = latestEventByRoom(events);
+  const timezone = tenant.basicInfo?.timezone || "UTC";
+  const today = localDate(new Date(), timezone);
+  const todayEvents = events.filter((event) => localDate(event.timestamp, timezone) === today);
+  const eventByRoom = latestEventByRoom(todayEvents);
   const pendingStatuses = new Set(["ready_for_cleaning", "cleaning"]);
   const items = rooms
-    .filter((room) => room.active !== false && pendingStatuses.has(room.status))
+    .filter((room) => room.active !== false && pendingStatuses.has(room.status) && eventByRoom.has(room.id))
     .sort((left, right) => String(left.number).localeCompare(String(right.number)))
     .map((room) => {
       const event = eventByRoom.get(room.id);
@@ -205,18 +220,68 @@ export async function getHousekeepingBoard(database, input = {}) {
         source: event?.source || room.lastCheckoutSource || "",
       };
     });
+  const checkoutToday = rooms
+    .filter((room) => room.active !== false && room.status === "occupied" &&
+      String(room.checkoutDueDate || "").slice(0, 10) === today)
+    .sort((left, right) => String(left.number).localeCompare(String(right.number)))
+    .map((room) => ({
+      roomId: room.id, roomNumber: room.number, roomName: room.name || "",
+      checkoutDueDate: String(room.checkoutDueDate).slice(0, 10), source: room.checkoutDueSource || "manual",
+    }));
+  const done = rooms
+    .filter((room) => room.active !== false && room.status === "ready" && room.lastCleanedAt &&
+      localDate(room.lastCleanedAt, timezone) === today && eventByRoom.has(room.id))
+    .sort((left, right) => String(left.number).localeCompare(String(right.number)))
+    .map((room) => {
+      const event = eventByRoom.get(room.id);
+      return { roomId: room.id, roomNumber: room.number, roomName: room.name || "", eventId: event.id,
+        checkoutTimestamp: event.timestamp, cleanedTimestamp: room.lastCleanedAt, source: event.source };
+    });
+  const staleTelegramMessages = events
+    .filter((event) => event.telegramMessageId && event.telegramChatId && !event.telegramMessageDeletedAt &&
+      localDate(event.timestamp, timezone) < today)
+    .map((event) => ({ eventId: event.id, messageId: event.telegramMessageId,
+      chatId: event.telegramChatId, checkoutDate: localDate(event.timestamp, timezone) }));
 
   return {
     tenant: publicTenant(tenant),
     board: publicHousekeepingBoardRecord(boards[tenant.id]),
     updatedAt: now(),
+    date: today,
+    timezone,
+    checkoutToday,
+    pendingCleaning: items,
+    done,
+    staleTelegramMessages,
     items,
     summary: {
+      checkoutToday: checkoutToday.length,
       waiting: items.filter((item) => item.status === "ready_for_cleaning").length,
       cleaning: items.filter((item) => item.status === "cleaning").length,
+      done: done.length,
       total: items.length,
     },
   };
+}
+
+export async function saveCheckoutTelegramMessage(database, input = {}) {
+  const tenant = await requireTelegramTenant(database, input);
+  const eventId = cleanString(input.eventId || input.checkoutEventId);
+  const event = await database.getTenantRecord("checkoutEvents", tenant.id, eventId);
+  if (!event) {
+    const error = new Error("Checkout event not found."); error.statusCode = 404; throw error;
+  }
+  const messageId = cleanTelegramIntegerId(firstPresent(input.messageId, input.message_id, input.result?.message_id));
+  const chatId = cleanTelegramId(firstPresent(input.chatId, input.chat_id, input.result?.chat?.id));
+  if (!messageId || !chatId) {
+    const error = new Error("Telegram messageId and chatId are required."); error.statusCode = 400; throw error;
+  }
+  const updated = { ...event, telegramMessageId: String(messageId), telegramChatId: chatId };
+  if (input.deleted === true) updated.telegramMessageDeletedAt = now();
+  await database.setRecord("checkoutEvents", event.id, updated);
+  return { success: true, tenantId: tenant.id, eventId: event.id, messageId, chatId,
+    checkoutDate: localDate(event.timestamp, tenant.basicInfo?.timezone || "UTC"),
+    deleted: Boolean(updated.telegramMessageDeletedAt) };
 }
 
 export async function saveHousekeepingBoardMessage(database, input = {}) {

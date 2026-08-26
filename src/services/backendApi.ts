@@ -686,6 +686,12 @@ export async function getCheckoutKeys(): Promise<KeyIdentifier[]> {
   return requestJson<KeyIdentifier[]>("/api/checkout/keys");
 }
 
+export async function setTodayCheckoutRooms(roomIds: string[]): Promise<{
+  date: string; source: "manual"; roomIds: string[];
+}> {
+  return requestJson("/api/checkout/today", { method: "PUT", body: JSON.stringify({ roomIds }) });
+}
+
 export async function createRoom(input: Partial<Room>): Promise<Room> {
   return requestJson<Room>("/api/checkout/rooms", {
     method: "POST",

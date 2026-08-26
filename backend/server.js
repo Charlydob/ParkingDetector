@@ -41,6 +41,7 @@ import {
   getHousekeepingBoard,
   handleHousekeepingAction,
   saveHousekeepingBoardMessage,
+  saveCheckoutTelegramMessage,
   validateTelegramIntegrationSecret,
 } from "./services/telegramIntegrationService.js";
 import {
@@ -597,6 +598,14 @@ const server = createServer(async (request, response) => {
       }
 
       sendJson(response, 200, await handleHousekeepingAction(database, await readJsonBody(request)));
+      return;
+    }
+
+    if (request.method === "POST" && pathname === "/api/integrations/telegram/checkout-message") {
+      if (!validateTelegramIntegrationSecret(request.headers)) {
+        sendJson(response, 401, { success: false, error: "Unauthorized." }); return;
+      }
+      sendJson(response, 200, await saveCheckoutTelegramMessage(database, await readJsonBody(request)));
       return;
     }
 

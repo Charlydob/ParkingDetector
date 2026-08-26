@@ -183,6 +183,34 @@ export async function listCheckoutOverview(database, tenantId) {
   };
 }
 
+export async function setTodayCheckoutRooms(database, tenantId, roomIds, date) {
+  const selected = new Set(Array.isArray(roomIds) ? roomIds.map(String) : []);
+  const rooms = (await database.listTenantRecords("rooms", tenantId)).filter(isRoomAvailable);
+  const invalid = [...selected].filter((id) => !rooms.some((room) => room.id === id));
+  if (invalid.length) {
+    const error = new Error("One or more rooms were not found.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  await Promise.all(rooms.map((room) => {
+    const currentlyToday = String(room.checkoutDueDate || "").slice(0, 10) === date;
+    if (!selected.has(room.id) && !currentlyToday) return undefined;
+    return database.setRecord("rooms", room.id, {
+      ...room,
+      checkoutDueDate: selected.has(room.id) ? date : null,
+      checkoutDueSource: selected.has(room.id) ? "manual" : null,
+      updatedAt: now(),
+    });
+  }));
+
+  return {
+    date,
+    source: "manual",
+    roomIds: rooms.filter((room) => selected.has(room.id)).map((room) => room.id),
+  };
+}
+
 function publicCycle(cycle) {
   return cycle
     ? {
@@ -375,6 +403,10 @@ export async function updateRoom(database, tenantId, roomId, patch) {
     name: patch.name === undefined ? current.name : cleanString(patch.name),
     active: patch.active === undefined ? current.active !== false : Boolean(patch.active),
     status: VALID_ROOM_STATUSES.has(patch.status) ? patch.status : current.status,
+    lastCleanedAt:
+      patch.status === "ready" && ["ready_for_cleaning", "cleaning"].includes(current.status)
+        ? now()
+        : current.lastCleanedAt,
     updatedAt: now(),
   };
 
@@ -677,6 +709,8 @@ export async function registerCheckout(database, tenantId, roomId, source, optio
       status: "ready_for_cleaning",
       lastCheckoutAt: timestamp,
       lastCheckoutSource: source,
+      checkoutDueDate: null,
+      checkoutDueSource: null,
       updatedAt: timestamp,
     };
 
