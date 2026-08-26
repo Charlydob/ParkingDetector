@@ -11,6 +11,7 @@ import {
   registerCheckout,
   registerCheckoutByIdentifier,
   resolveCheckoutByIdentifier,
+  setTodayCheckoutRooms,
   updateKeyIdentifier,
   updateRoom,
 } from "../services/checkoutService.js";
@@ -44,12 +45,18 @@ export async function handleCheckoutRoute({ request, pathname, parsedUrl, body, 
   if (request.method === "GET" && pathname === "/api/checkout/overview") {
     const tenant = await database.getRecord("tenants", tenantId);
     const overview = await listCheckoutOverview(database, tenantId);
+    const timezone = tenant?.basicInfo?.timezone || "UTC";
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: timezone,
+      year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+    const part = (type) => parts.find((item) => item.type === type)?.value;
+    const todayDate = `${part("year")}-${part("month")}-${part("day")}`;
     const publicUrl = `${publicBaseUrl(request)}/public/${tenant.slug}/checkout`;
 
     return {
       status: 200,
       payload: {
         ...overview,
+        todayDate,
         publicUrl,
         publicQrDataUrl: await QRCode.toDataURL(publicUrl, { errorCorrectionLevel: "H", margin: 4 }),
       },
@@ -59,6 +66,19 @@ export async function handleCheckoutRoute({ request, pathname, parsedUrl, body, 
   if (request.method === "GET" && pathname === "/api/checkout/keys") {
     const keys = await listKeyIdentifiers(database, tenantId);
     return { status: 200, payload: keys };
+  }
+
+  if (request.method === "PUT" && pathname === "/api/checkout/today") {
+    requireTenantAdmin(session, tenantId);
+    const tenant = await database.getRecord("tenants", tenantId);
+    const timezone = tenant?.basicInfo?.timezone || "UTC";
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      year: "numeric", month: "2-digit", day: "2-digit",
+    }).formatToParts(new Date());
+    const part = (type) => parts.find((item) => item.type === type)?.value;
+    const date = `${part("year")}-${part("month")}-${part("day")}`;
+    return { status: 200, payload: await setTodayCheckoutRooms(database, tenantId, body.roomIds, date) };
   }
 
   if (request.method === "POST" && pathname === "/api/checkout/rooms") {

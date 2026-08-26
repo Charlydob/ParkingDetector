@@ -21,6 +21,9 @@ export interface Room {
   deletedAt?: string;
   lastCheckoutAt?: string;
   lastCheckoutSource?: CheckoutSource;
+  checkoutDueDate?: string;
+  checkoutDueSource?: "manual" | "reservation_api";
+  lastCleanedAt?: string;
 }
 
 export interface KeyIdentifier {
@@ -52,4 +55,5 @@ export interface CheckoutOverview {
   events: CheckoutEvent[];
   publicUrl: string;
   publicQrDataUrl?: string;
+  todayDate: string;
 }

@@ -1528,6 +1528,28 @@ button:disabled {
   width: 34px;
 }
 
+.checkout-today-modal {
+  background: #fff;
+  border-radius: 10px;
+  max-height: calc(100vh - 36px);
+  max-width: 560px;
+  overflow: auto;
+  padding: 22px;
+  position: relative;
+  width: 100%;
+}
+
+.checkout-today-room-grid {
+  display: grid;
+  gap: 7px;
+  grid-template-columns: repeat(auto-fill, minmax(58px, 1fr));
+  margin: 18px 0;
+}
+
+.checkout-today-room-grid button { min-height: 38px; padding: 6px; }
+.checkout-today-room-grid button.selected { background: #1f6f5f; border-color: #1f6f5f; color: #fff; }
+.checkout-today-actions { justify-content: flex-end; }
+
 .sr-only {
   height: 1px;
   margin: -1px;
