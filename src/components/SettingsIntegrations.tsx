@@ -8,7 +8,6 @@ import {
   disconnectStripe,
   disconnectTelegram,
   generateTelegramPairingCode,
-  generateTelegramStaffPairingCode,
   getIntegrationSettings,
   previewReservationSource,
   saveFrigate,
@@ -137,9 +136,6 @@ export function SettingsIntegrations({
         tenant: { id: string; name: string; slug: string };
       }
     | undefined
-  >();
-  const [telegramStaffPairing, setTelegramStaffPairing] = useState<
-    Awaited<ReturnType<typeof generateTelegramStaffPairingCode>> | undefined
   >();
   const [frigateBaseUrl, setFrigateBaseUrl] = useState("");
   const [frigatePollIntervalMs, setFrigatePollIntervalMs] = useState(5000);
@@ -367,7 +363,6 @@ export function SettingsIntegrations({
   const telegramSettings = settings?.notifications?.telegram;
   const telegramConnected = Boolean(telegramSettings?.enabled && telegramSettings.chatId);
   const telegramConnectCommand = telegramPairing ? `/connect ${telegramPairing.code}` : "";
-  const telegramStaffCommand = telegramStaffPairing ? `/staff ${telegramStaffPairing.code}` : "";
   const telegramDiagnostics = telegramSettings?.diagnostics || {};
 
   return (
@@ -1029,33 +1024,6 @@ export function SettingsIntegrations({
                 </div>
               </div>
             )}
-
-            <div className="source-preview">
-              <strong>Vincular mi Telegram</strong>
-              <p>
-                {telegramStaffPairing?.user.telegramUserId
-                  ? `✅ Telegram conectado${telegramStaffPairing.user.telegramUsername ? ` como @${telegramStaffPairing.user.telegramUsername}` : ""}`
-                  : "Genera un código personal y envíalo al bot, incluso desde un chat privado."}
-              </p>
-              {telegramStaffPairing && (
-                <div className="meta-list">
-                  <span>Comando</span><strong>{telegramStaffCommand}</strong>
-                  <span>Caduca</span><strong>{formatDate(telegramStaffPairing.expiresAt)}</strong>
-                </div>
-              )}
-              <div className="button-row">
-                <button type="button" disabled={busy !== ""} onClick={() =>
-                  run("telegram-staff-pairing", async () => {
-                    const pairing = await generateTelegramStaffPairingCode();
-                    setTelegramStaffPairing(pairing);
-                    return pairing;
-                  }, "Staff Telegram pairing code generated.")
-                }><Plus size={15} />Generar código</button>
-                {telegramStaffPairing && <button type="button" onClick={() => copyToClipboard(telegramStaffCommand)}>
-                  <Copy size={15} />Copiar /staff
-                </button>}
-              </div>
-            </div>
 
             <div className="button-row">
               <button

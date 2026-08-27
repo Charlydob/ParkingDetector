@@ -272,6 +272,40 @@ button:disabled {
   grid-template-columns: 1fr auto;
 }
 
+.telegram-link-card,
+.telegram-link-content,
+.telegram-link-status {
+  display: grid;
+  gap: 10px;
+}
+
+.telegram-link-status span,
+.telegram-link-content p,
+.telegram-link-notice {
+  margin: 0;
+}
+
+.telegram-link-content > button {
+  justify-self: start;
+}
+
+.telegram-command {
+  max-width: 520px;
+}
+
+.telegram-command code {
+  font-size: 1.1rem;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.telegram-link-notice {
+  color: #526074;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
 .activity-list {
   display: grid;
   padding: 4px 0;
@@ -1999,6 +2033,12 @@ button:disabled {
   .checkout-grid,
   .platform-stats {
     grid-template-columns: 1fr;
+  }
+
+  .telegram-link-content > button,
+  .telegram-command .button-row button {
+    justify-content: center;
+    width: 100%;
   }
 
   .room-row,
