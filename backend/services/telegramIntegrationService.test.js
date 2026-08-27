@@ -7,6 +7,7 @@ import {
   createTelegramPairingCode,
   disconnectTelegramChat,
   getHousekeepingBoard,
+  getHousekeepingStaff,
   handleHousekeepingAction,
   registerManualTelegramCheckout,
   saveHousekeepingBoardMessage,
@@ -138,6 +139,54 @@ function withTelegramSecret(secret, callback) {
       }
     });
 }
+
+test("housekeeping staff endpoint support authenticates and isolates active tenant members", async () => {
+  const database = createFakeDatabase({
+    tenants: {
+      "hotel-a": { id: "hotel-a", active: true },
+      "hotel-b": { id: "hotel-b", active: true },
+    },
+    tenantSettings: {
+      "hotel-a": { notifications: { telegram: { enabled: true, chatId: "-1001" } } },
+      "hotel-b": { notifications: { telegram: { enabled: true, chatId: "-1002" } } },
+    },
+    users: {
+      admin: { id: "admin", email: "admin@example.test", displayName: "Admin", active: true, passwordHash: "hidden" },
+      manager: { id: "manager", email: "manager@example.test", displayName: "Manager", active: true, telegramUserId: "22", telegramUsername: "@boss", passwordHash: "hidden" },
+      staff: { id: "staff", email: "staff@example.test", displayName: "Staff", active: true, telegramUserId: null, passwordHash: "hidden" },
+      inactive: { id: "inactive", email: "inactive@example.test", displayName: "Inactive", active: false },
+      outsider: { id: "outsider", email: "outside@example.test", displayName: "Outside", active: true, telegramUserId: "99" },
+    },
+    memberships: {
+      admin: { id: "ma", tenantId: "hotel-a", userId: "admin", role: "tenant_admin" },
+      manager: { id: "mm", tenantId: "hotel-a", userId: "manager", role: "manager" },
+      staff: { id: "ms", tenantId: "hotel-a", userId: "staff", role: "staff" },
+      inactive: { id: "mi", tenantId: "hotel-a", userId: "inactive", role: "staff" },
+      outsider: { id: "mo", tenantId: "hotel-b", userId: "outsider", role: "staff" },
+    },
+  });
+
+  await withTelegramSecret("shared-secret", async () => {
+    assert.equal(validateTelegramIntegrationSecret({ "x-hotelapp-secret": "shared-secret" }), true);
+    assert.equal(validateTelegramIntegrationSecret({ "x-hotelapp-secret": "wrong" }), false);
+  });
+
+  const byTenant = await getHousekeepingStaff(database, { tenantId: "hotel-a" });
+  const byChat = await getHousekeepingStaff(database, { chatId: "-1001" });
+  assert.deepEqual(byChat, byTenant);
+  assert.deepEqual(byTenant.members.map((member) => member.role), ["tenant_admin", "manager", "staff"]);
+  assert.equal(byTenant.members.some((member) => member.userId === "outsider"), false);
+  assert.equal(byTenant.members.some((member) => member.userId === "inactive"), false);
+  assert.equal(JSON.stringify(byTenant).includes("passwordHash"), false);
+  assert.equal(byTenant.members.find((member) => member.userId === "manager").telegramLinked, true);
+  assert.equal(byTenant.members.find((member) => member.userId === "staff").telegramLinked, false);
+  assert.equal(byTenant.members.find((member) => member.userId === "manager").telegramUsername, "boss");
+  await assert.rejects(
+    () => getHousekeepingStaff(database, { tenantId: "hotel-a", chatId: "-1002" }),
+    (error) => error.statusCode === 403,
+  );
+  await assert.rejects(() => getHousekeepingStaff(database, {}), /Tenant not found/);
+});
 
 test("staff pairing is one-use and linked staff can complete the housekeeping task sequence", async () => {
   const database = createFakeDatabase({
