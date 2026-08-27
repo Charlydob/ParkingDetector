@@ -180,6 +180,34 @@ export async function resolveTelegramActor(database, tenantId, input = {}) {
   return { user, membership, role: membership.role };
 }
 
+export async function getHousekeepingStaff(database, input = {}) {
+  const tenant = await requireTelegramTenant(database, input);
+  await assertTenantChat(database, tenant.id, input);
+
+  const [users, memberships] = await Promise.all([
+    database.listRecords("users"),
+    database.listRecords("memberships"),
+  ]);
+  const allowedRoles = new Set(["tenant_admin", "manager", "staff"]);
+  const usersById = new Map(users.map((user) => [user.id, user]));
+  const members = memberships
+    .filter((membership) =>
+      membership.tenantId === tenant.id && allowedRoles.has(membership.role),
+    )
+    .map((membership) => ({ membership, user: usersById.get(membership.userId) }))
+    .filter(({ user }) => user && user.active !== false)
+    .map(({ membership, user }) => ({
+      userId: user.id,
+      displayName: user.displayName || user.email,
+      email: user.email,
+      telegramUsername: cleanString(user.telegramUsername).replace(/^@/, ""),
+      telegramLinked: Boolean(cleanTelegramId(user.telegramUserId)),
+      role: membership.role,
+    }));
+
+  return { success: true, tenantId: tenant.id, members };
+}
+
 async function resolveAssignmentTarget(database, tenantId, target) {
   const needle = cleanString(target);
   if (!needle) return undefined;

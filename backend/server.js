@@ -41,6 +41,7 @@ import {
   createTelegramPairingCode,
   disconnectTelegramChat,
   getHousekeepingBoard,
+  getHousekeepingStaff,
   handleHousekeepingAction,
   registerManualTelegramCheckout,
   saveHousekeepingBoardMessage,
@@ -595,6 +596,22 @@ const server = createServer(async (request, response) => {
           chatId: parsedUrl.searchParams.get("chatId"),
         }),
       );
+      return;
+    }
+
+    if (
+      request.method === "GET" &&
+      pathname === "/api/integrations/telegram/housekeeping-staff"
+    ) {
+      if (!validateTelegramIntegrationSecret(request.headers)) {
+        sendJson(response, 401, { success: false, error: "Unauthorized." });
+        return;
+      }
+
+      sendJson(response, 200, await getHousekeepingStaff(database, {
+        tenantId: parsedUrl.searchParams.get("tenantId"),
+        chatId: parsedUrl.searchParams.get("chatId"),
+      }));
       return;
     }
 
