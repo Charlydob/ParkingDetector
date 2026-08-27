@@ -579,6 +579,18 @@ export async function generateTelegramPairingCode(): Promise<{
   });
 }
 
+export async function generateTelegramStaffPairingCode(): Promise<{
+  code: string;
+  expiresAt: string;
+  tenant: { id: string; name: string; slug: string };
+  user: { id: string; displayName?: string; email: string; telegramUserId?: string | null; telegramUsername?: string | null };
+}> {
+  return requestJson("/api/integrations/telegram/staff-pairing-code", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
 export async function disconnectTelegram(): Promise<IntegrationSettings> {
   return normalizeIntegrationSettings(
     await requestJson<IntegrationSettings>("/api/integrations/telegram/disconnect", {

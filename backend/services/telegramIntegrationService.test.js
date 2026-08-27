@@ -2,10 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   connectTelegramChat,
+  connectTelegramStaff,
+  createStaffPairingCode,
   createTelegramPairingCode,
   disconnectTelegramChat,
   getHousekeepingBoard,
   handleHousekeepingAction,
+  registerManualTelegramCheckout,
   saveHousekeepingBoardMessage,
   validateTelegramIntegrationSecret,
 } from "./telegramIntegrationService.js";
@@ -135,6 +138,51 @@ function withTelegramSecret(secret, callback) {
       }
     });
 }
+
+test("staff pairing is one-use and linked staff can complete the housekeeping task sequence", async () => {
+  const database = createFakeDatabase({
+    tenants: { "hotel-a": { id: "hotel-a", name: "Hotel A", slug: "hotel-a", active: true } },
+    tenantSettings: { "hotel-a": { tenantId: "hotel-a", notifications: { telegram: { enabled: true, chatId: "-1001" } } } },
+    users: { staff: { id: "staff", email: "staff@example.test", displayName: "Staff", active: true } },
+    memberships: { member: { id: "member", tenantId: "hotel-a", userId: "staff", role: "staff" } },
+  });
+  const session = { user: database.data.users.staff, memberships: [database.data.memberships.member], isPlatformAdmin: false };
+  const pairing = await createStaffPairingCode(database, session, "hotel-a");
+  const linked = await connectTelegramStaff(database, { code: pairing.code, telegramUserId: "9007199254740999", telegramUsername: "worker" });
+  assert.equal(linked.role, "staff");
+  await assert.rejects(() => connectTelegramStaff(database, { code: pairing.code, telegramUserId: "2" }), /Invalid or expired/);
+
+  const room = await createRoom(database, "hotel-a", { number: "204", status: "occupied" });
+  const checkout = await registerCheckout(database, "hotel-a", room.id, "manual");
+  const actor = { tenantId: "hotel-a", chatId: "-1001", telegramUserId: "9007199254740999", eventId: checkout.event.id };
+  await handleHousekeepingAction(database, { ...actor, action: "claim" });
+  await handleHousekeepingAction(database, { ...actor, action: "bed_done" });
+  await handleHousekeepingAction(database, { ...actor, action: "cleaning_done" });
+  const completed = await handleHousekeepingAction(database, { ...actor, action: "complete" });
+  assert.equal(database.data.rooms[room.id].status, "ready");
+  assert.equal(completed.board.done[0].housekeeping.completedBy.userId, "staff");
+  await assert.rejects(() => handleHousekeepingAction(database, { ...actor, action: "assign", assignmentTarget: "staff@example.test" }), /Manager access/);
+});
+
+test("staff cannot register manual checkout while manager can resolve tenant by connected chat", async () => {
+  const database = createFakeDatabase({
+    tenants: { "hotel-a": { id: "hotel-a", name: "Hotel A", slug: "hotel-a", active: true } },
+    tenantSettings: { "hotel-a": { tenantId: "hotel-a", notifications: { telegram: { enabled: true, chatId: "-1001" } } } },
+    users: {
+      staff: { id: "staff", email: "staff@example.test", displayName: "Staff", telegramUserId: "1" },
+      manager: { id: "manager", email: "manager@example.test", displayName: "Manager", telegramUserId: "2" },
+    },
+    memberships: {
+      staffMember: { id: "staffMember", tenantId: "hotel-a", userId: "staff", role: "staff" },
+      managerMember: { id: "managerMember", tenantId: "hotel-a", userId: "manager", role: "manager" },
+    },
+  });
+  await createRoom(database, "hotel-a", { number: "205", status: "occupied" });
+  await assert.rejects(() => registerManualTelegramCheckout(database, { chatId: "-1001", roomNumber: "205", telegramUserId: "1" }), /Manager access/);
+  const result = await registerManualTelegramCheckout(database, { chatId: "-1001", roomNumber: "205", telegramUserId: "2" });
+  assert.equal(result.tenantId, "hotel-a");
+  assert.equal(result.event.metadata.origin, "telegram");
+});
 
 test("Telegram pairing code is tenant-scoped and expires in about 10 minutes", async () => {
   const database = createFakeDatabase({
@@ -506,6 +554,7 @@ test("Telegram housekeeping board keeps numeric message id across checkout refre
     assert.deepEqual(Object.keys(nextBoard.items[0]).sort(), [
       "checkoutTimestamp",
       "eventId",
+      "housekeeping",
       "roomId",
       "roomName",
       "roomNumber",

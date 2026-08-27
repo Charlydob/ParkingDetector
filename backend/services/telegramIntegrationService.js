@@ -1,8 +1,13 @@
 import { randomInt } from "node:crypto";
 import { updateTenantSettings } from "./tenantSettingsService.js";
-import { updateRoom } from "./checkoutService.js";
+import { registerCheckout, updateRoom } from "./checkoutService.js";
+import {
+  canManageHousekeeping,
+  requireHousekeepingPermission,
+} from "./housekeepingPermissions.js";
 
 const PAIRING_DIAGNOSTIC_KEY = "telegramPairingCodes";
+const STAFF_PAIRING_DIAGNOSTIC_KEY = "telegramStaffPairingCodes";
 const BOARD_DIAGNOSTIC_KEY = "telegramHousekeepingBoards";
 const READY_CONFIRMATION_DIAGNOSTIC_KEY = "telegramReadyConfirmations";
 const PAIRING_CODE_TTL_MINUTES = 10;
@@ -124,8 +129,103 @@ async function resolveTenant(database, input = {}) {
     return tenants.find((tenant) => tenant.slug === tenantSlug && tenant.active !== false);
   }
 
-  const activeTenants = tenants.filter((tenant) => tenant.active !== false);
-  return activeTenants.length === 1 ? activeTenants[0] : undefined;
+  const chatId = cleanTelegramId(input.chatId ?? input.message?.chat?.id);
+  const connected = [];
+  for (const tenant of tenants.filter((item) => item.active !== false)) {
+    const settings = await database.getRecord("tenantSettings", tenant.id);
+    const telegram = settings?.notifications?.telegram || {};
+    if (telegram.enabled && cleanTelegramId(telegram.chatId)) {
+      connected.push({ tenant, chatId: cleanTelegramId(telegram.chatId) });
+    }
+  }
+  if (chatId) {
+    const matches = connected.filter((item) => item.chatId === chatId);
+    return matches.length === 1 ? matches[0].tenant : undefined;
+  }
+  return connected.length === 1 ? connected[0].tenant : undefined;
+}
+
+async function assertTenantChat(database, tenantId, input = {}) {
+  const supplied = cleanTelegramId(input.chatId ?? input.message?.chat?.id);
+  if (!supplied) return;
+  const settings = await database.getRecord("tenantSettings", tenantId);
+  const connected = settings?.notifications?.telegram;
+  if (!connected?.enabled || cleanTelegramId(connected.chatId) !== supplied) {
+    const error = new Error("Telegram chat is not connected to this tenant.");
+    error.statusCode = 403;
+    throw error;
+  }
+}
+
+export async function resolveTelegramActor(database, tenantId, input = {}) {
+  const telegramUserId = cleanTelegramId(input.telegramUserId ?? input.from?.id);
+  const users = await database.listRecords("users");
+  const user = users.find((candidate) => cleanTelegramId(candidate.telegramUserId) === telegramUserId);
+  if (!user) {
+    const error = new Error("Telegram user is not linked to a HotelApp user. Use /staff CODE first.");
+    error.statusCode = 403;
+    throw error;
+  }
+  if (user.globalRole === "platform_admin") {
+    return { user, membership: null, role: "platform_admin" };
+  }
+  const membership = (await database.listRecords("memberships")).find(
+    (candidate) => candidate.tenantId === tenantId && candidate.userId === user.id,
+  );
+  if (!membership) {
+    const error = new Error("Telegram user does not have access to this tenant.");
+    error.statusCode = 403;
+    throw error;
+  }
+  return { user, membership, role: membership.role };
+}
+
+async function resolveAssignmentTarget(database, tenantId, target) {
+  const needle = cleanString(target);
+  if (!needle) return undefined;
+  const [users, memberships] = await Promise.all([
+    database.listRecords("users"), database.listRecords("memberships"),
+  ]);
+  const members = memberships.filter((item) => item.tenantId === tenantId)
+    .map((membership) => ({ membership, user: users.find((user) => user.id === membership.userId) }))
+    .filter((item) => item.user);
+  const lower = needle.toLowerCase();
+  const matches = members.filter(({ user }) =>
+    needle.startsWith("@")
+      ? cleanString(user.telegramUsername).replace(/^@/, "").toLowerCase() === lower.slice(1)
+      : cleanString(user.email).toLowerCase() === lower || cleanString(user.displayName).toLowerCase() === lower,
+  );
+  if (matches.length !== 1) {
+    const error = new Error(matches.length ? "Assignment target is ambiguous." : "Assignment target not found in this tenant.");
+    error.statusCode = 400;
+    throw error;
+  }
+  return matches[0];
+}
+
+function housekeepingMetadata(event) {
+  return event?.metadata?.housekeeping && typeof event.metadata.housekeeping === "object"
+    ? event.metadata.housekeeping : {};
+}
+
+async function hydratedHousekeeping(database, event) {
+  const housekeeping = housekeepingMetadata(event);
+  const users = await database.listRecords("users");
+  const memberships = await database.listRecords("memberships");
+  const actor = (id, includeRole = false) => {
+    const user = users.find((candidate) => candidate.id === id);
+    if (!user) return null;
+    const membership = memberships.find((candidate) => candidate.tenantId === event.tenantId && candidate.userId === id);
+    return { userId: user.id, displayName: user.displayName || user.email,
+      ...(user.telegramUsername ? { telegramUsername: user.telegramUsername } : {}),
+      ...(includeRole ? { role: user.globalRole === "platform_admin" ? "platform_admin" : membership?.role || null } : {}) };
+  };
+  return {
+    assignedTo: actor(housekeeping.assignedToUserId, true), assignedAt: housekeeping.assignedAt || null,
+    bedDoneBy: actor(housekeeping.bedDoneByUserId), bedDoneAt: housekeeping.bedDoneAt || null,
+    cleaningDoneBy: actor(housekeeping.cleaningDoneByUserId), cleaningDoneAt: housekeeping.cleaningDoneAt || null,
+    completedBy: actor(housekeeping.completedByUserId), completedAt: housekeeping.completedAt || null,
+  };
 }
 
 function latestEventByRoom(events) {
@@ -204,7 +304,7 @@ export async function getHousekeepingBoard(database, input = {}) {
   const todayEvents = events.filter((event) => localDate(event.timestamp, timezone) === today);
   const eventByRoom = latestEventByRoom(todayEvents);
   const pendingStatuses = new Set(["ready_for_cleaning", "cleaning"]);
-  const items = rooms
+  const itemRows = rooms
     .filter((room) => room.active !== false && pendingStatuses.has(room.status) && eventByRoom.has(room.id))
     .sort((left, right) => String(left.number).localeCompare(String(right.number)))
     .map((room) => {
@@ -220,6 +320,10 @@ export async function getHousekeepingBoard(database, input = {}) {
         source: event?.source || room.lastCheckoutSource || "",
       };
     });
+  const items = await Promise.all(itemRows.map(async (item) => ({
+    ...item,
+    housekeeping: await hydratedHousekeeping(database, eventByRoom.get(item.roomId)),
+  })));
   const checkoutToday = rooms
     .filter((room) => room.active !== false &&
       String(room.checkoutDueDate || "").slice(0, 10) === today)
@@ -229,7 +333,7 @@ export async function getHousekeepingBoard(database, input = {}) {
       room: room.number, accessCode: room.accessCode ?? null,
       checkoutDueDate: String(room.checkoutDueDate).slice(0, 10), source: room.checkoutDueSource || "manual",
     }));
-  const done = rooms
+  const doneRows = rooms
     .filter((room) => room.active !== false && room.status === "ready" && room.lastCleanedAt &&
       localDate(room.lastCleanedAt, timezone) === today && eventByRoom.has(room.id))
     .sort((left, right) => String(left.number).localeCompare(String(right.number)))
@@ -238,6 +342,10 @@ export async function getHousekeepingBoard(database, input = {}) {
       return { roomId: room.id, roomNumber: room.number, roomName: room.name || "", eventId: event.id,
         checkoutTimestamp: event.timestamp, cleanedTimestamp: room.lastCleanedAt, source: event.source };
     });
+  const done = await Promise.all(doneRows.map(async (item) => ({
+    ...item,
+    housekeeping: await hydratedHousekeeping(database, eventByRoom.get(item.roomId)),
+  })));
   const staleTelegramMessages = events
     .filter((event) => event.telegramMessageId && event.telegramChatId && !event.telegramMessageDeletedAt &&
       localDate(event.timestamp, timezone) < today)
@@ -327,15 +435,32 @@ export async function saveHousekeepingBoardMessage(database, input = {}) {
 
 export async function handleHousekeepingAction(database, input = {}) {
   const tenant = await requireTelegramTenant(database, input);
+  await assertTenantChat(database, tenant.id, input);
   const action = cleanString(input.action || input.type).toLowerCase();
-  const eventId = cleanString(input.eventId || input.checkoutEventId);
+  let eventId = cleanString(input.eventId || input.checkoutEventId);
   const chatId = cleanTelegramId(input.chatId ?? input.message?.chat?.id);
   const telegramUserId = cleanTelegramId(input.telegramUserId ?? input.from?.id);
 
-  if (action !== "ready" || !eventId || !chatId || !telegramUserId) {
+  if (!["ready", "claim", "bed_done", "cleaning_done", "complete", "assign"].includes(action) || !telegramUserId) {
     const error = new Error("Invalid housekeeping action.");
     error.statusCode = 400;
     throw error;
+  }
+
+  const actor = action === "ready" ? null : await resolveTelegramActor(database, tenant.id, input);
+  if (actor) requireHousekeepingPermission(actor.role, action === "assign" ? "manage" : "use");
+  if (!eventId && cleanString(input.roomNumber)) {
+    const timezone = tenant.basicInfo?.timezone || "UTC";
+    const today = localDate(new Date(), timezone);
+    const rooms = await database.listTenantRecords("rooms", tenant.id);
+    const room = rooms.find((candidate) => String(candidate.number).toLowerCase() === cleanString(input.roomNumber).toLowerCase());
+    const candidates = room ? (await database.listTenantRecords("checkoutEvents", tenant.id))
+      .filter((event) => event.roomId === room.id && localDate(event.timestamp, timezone) === today)
+      .sort((left, right) => new Date(right.timestamp) - new Date(left.timestamp)) : [];
+    eventId = candidates[0]?.id || "";
+  }
+  if (!eventId) {
+    const error = new Error("An active checkout event is required."); error.statusCode = 404; throw error;
   }
 
   const event = await database.getTenantRecord("checkoutEvents", tenant.id, eventId);
@@ -354,6 +479,43 @@ export async function handleHousekeepingAction(database, input = {}) {
     throw error;
   }
 
+  if (action !== "ready") {
+    const timestamp = now();
+    const housekeeping = { ...housekeepingMetadata(event) };
+    if (action === "claim") {
+      if (housekeeping.assignedToUserId && housekeeping.assignedToUserId !== actor.user.id && !canManageHousekeeping(actor.role)) {
+        const error = new Error("Room is already assigned to another staff member."); error.statusCode = 403; throw error;
+      }
+      if (housekeeping.assignedToUserId !== actor.user.id) {
+        Object.assign(housekeeping, { assignedToUserId: actor.user.id, assignedByUserId: actor.user.id, assignedAt: timestamp });
+      }
+    } else if (action === "assign") {
+      const target = await resolveAssignmentTarget(database, tenant.id, input.assignmentTarget);
+      Object.assign(housekeeping, { assignedToUserId: target.user.id, assignedByUserId: actor.user.id, assignedAt: timestamp });
+    } else if (action === "bed_done" && !housekeeping.bedDoneAt) {
+      Object.assign(housekeeping, { bedDoneByUserId: actor.user.id, bedDoneAt: timestamp });
+    } else if (action === "cleaning_done" && !housekeeping.cleaningDoneAt) {
+      Object.assign(housekeeping, { cleaningDoneByUserId: actor.user.id, cleaningDoneAt: timestamp });
+    } else if (action === "complete") {
+      if (!housekeeping.bedDoneAt || !housekeeping.cleaningDoneAt) {
+        const error = new Error("Bed and cleaning tasks must be completed first."); error.statusCode = 409; throw error;
+      }
+      if (!housekeeping.completedAt) {
+        Object.assign(housekeeping, { completedByUserId: actor.user.id, completedAt: timestamp });
+      }
+    }
+    await database.setRecord("checkoutEvents", event.id, {
+      ...event, metadata: { ...(event.metadata || {}), housekeeping },
+    });
+    if (action === "claim" && room.status === "ready_for_cleaning") {
+      await updateRoom(database, tenant.id, room.id, { status: "cleaning" });
+    }
+    if (action === "complete") await updateRoom(database, tenant.id, room.id, { status: "ready" });
+    return { success: true, action, board: await getHousekeepingBoard(database, { tenantId: tenant.id }) };
+  }
+
+  // Preserve the legacy two-tap `ready` action used by existing Telegram workflows.
+  if (!chatId) { const error = new Error("Invalid housekeeping action."); error.statusCode = 400; throw error; }
   const state = await getDiagnosticValue(database, READY_CONFIRMATION_DIAGNOSTIC_KEY);
   state.pending = cleanPendingConfirmations(state.pending);
   const key = confirmationKey({ chatId, telegramUserId, eventId });
@@ -422,6 +584,74 @@ export async function createTelegramPairingCode(database, tenantId) {
     expiresAt,
     tenant: publicTenant(tenant),
   };
+}
+
+export async function createStaffPairingCode(database, session, tenantId) {
+  const tenant = await database.getRecord("tenants", tenantId);
+  const membership = session.memberships?.find((item) => item.tenantId === tenantId);
+  if (!tenant || (!session.isPlatformAdmin && !membership)) {
+    const error = new Error("You do not have access to this tenant."); error.statusCode = 403; throw error;
+  }
+  const stored = await database.getRecord("diagnostics", STAFF_PAIRING_DIAGNOSTIC_KEY);
+  const state = stored?.value && typeof stored.value === "object" ? stored.value : stored || {};
+  state.codes ||= {};
+  let code = generateCode();
+  while (isUsable(state.codes[code])) code = generateCode();
+  const expiresAt = expiresAtFromNow();
+  state.codes[code] = { code, userId: session.user.id, tenantId, createdAt: now(), expiresAt };
+  await database.setRecord("diagnostics", STAFF_PAIRING_DIAGNOSTIC_KEY, state);
+  return { code, expiresAt, tenant: publicTenant(tenant), user: {
+    id: session.user.id, displayName: session.user.displayName, email: session.user.email,
+    telegramUserId: session.user.telegramUserId || null, telegramUsername: session.user.telegramUsername || null,
+  } };
+}
+
+export async function connectTelegramStaff(database, input = {}) {
+  const code = cleanString(input.code).toUpperCase();
+  const telegramUserId = cleanTelegramId(input.telegramUserId);
+  const stored = await database.getRecord("diagnostics", STAFF_PAIRING_DIAGNOSTIC_KEY);
+  const state = stored?.value && typeof stored.value === "object" ? stored.value : stored || {};
+  const pairing = state.codes?.[code];
+  if (!telegramUserId || !isUsable(pairing)) {
+    const error = new Error("Invalid or expired staff pairing code."); error.statusCode = 400; throw error;
+  }
+  const [user, tenant, users, memberships] = await Promise.all([
+    database.getRecord("users", pairing.userId), database.getRecord("tenants", pairing.tenantId),
+    database.listRecords("users"), database.listRecords("memberships"),
+  ]);
+  const role = user?.globalRole === "platform_admin" ? "platform_admin" :
+    memberships.find((item) => item.tenantId === pairing.tenantId && item.userId === pairing.userId)?.role;
+  if (!user || !tenant || !role) {
+    const error = new Error("Staff pairing is no longer valid."); error.statusCode = 400; throw error;
+  }
+  const alreadyLinked = users.find((candidate) => cleanTelegramId(candidate.telegramUserId) === telegramUserId && candidate.id !== user.id);
+  if (alreadyLinked) {
+    const error = new Error("Telegram user is already linked to another HotelApp user."); error.statusCode = 409; throw error;
+  }
+  const username = cleanString(input.telegramUsername).replace(/^@/, "");
+  await database.setRecord("users", user.id, { ...user, telegramUserId, telegramUsername: username || null, telegramLinkedAt: now() });
+  delete state.codes[code];
+  await database.setRecord("diagnostics", STAFF_PAIRING_DIAGNOSTIC_KEY, state);
+  return { success: true, userId: user.id, displayName: user.displayName || user.email, role,
+    tenantId: tenant.id, telegramUsername: username || null, message: `Telegram linked to ${user.displayName || user.email}.` };
+}
+
+export async function registerManualTelegramCheckout(database, input = {}) {
+  const tenant = await requireTelegramTenant(database, input);
+  await assertTenantChat(database, tenant.id, input);
+  const actor = await resolveTelegramActor(database, tenant.id, input);
+  requireHousekeepingPermission(actor.role, "manage");
+  const roomNumber = cleanString(input.roomNumber);
+  const rooms = await database.listTenantRecords("rooms", tenant.id);
+  const room = rooms.find((candidate) => candidate.active !== false && String(candidate.number).toLowerCase() === roomNumber.toLowerCase());
+  if (!room) { const error = new Error("Room not found."); error.statusCode = 404; throw error; }
+  const target = input.assignmentTarget ? await resolveAssignmentTarget(database, tenant.id, input.assignmentTarget) : undefined;
+  const timestamp = now();
+  const metadata = { origin: "telegram", actorUserId: actor.user.id,
+    actorTelegramUserId: cleanTelegramId(input.telegramUserId ?? input.from?.id),
+    ...(target ? { housekeeping: { assignedToUserId: target.user.id, assignedByUserId: actor.user.id, assignedAt: timestamp } } : {}) };
+  const result = await registerCheckout(database, tenant.id, room.id, "manual", { metadata });
+  return { success: true, duplicate: result.duplicate, tenantId: tenant.id, event: result.event, room: result.room };
 }
 
 export function validateTelegramIntegrationSecret(headers = {}) {
