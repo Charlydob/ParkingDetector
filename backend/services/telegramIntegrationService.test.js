@@ -213,6 +213,61 @@ test("staff pairing is one-use and linked staff can complete the housekeeping ta
   await assert.rejects(() => handleHousekeepingAction(database, { ...actor, action: "assign", assignmentTarget: "staff@example.test" }), /Manager access/);
 });
 
+test("complete finishes all housekeeping tasks without prior progress and makes the room ready", async () => {
+  const database = createFakeDatabase({
+    tenants: { "hotel-a": { id: "hotel-a", name: "Hotel A", slug: "hotel-a", active: true } },
+    tenantSettings: { "hotel-a": { tenantId: "hotel-a", notifications: { telegram: { enabled: true, chatId: "-1001" } } } },
+    users: { staff: { id: "staff", email: "staff@example.test", displayName: "Staff", active: true, telegramUserId: "1" } },
+    memberships: { member: { id: "member", tenantId: "hotel-a", userId: "staff", role: "staff" } },
+  });
+  const room = await createRoom(database, "hotel-a", { number: "205", status: "occupied" });
+  const checkout = await registerCheckout(database, "hotel-a", room.id, "manual");
+
+  await handleHousekeepingAction(database, {
+    tenantId: "hotel-a", chatId: "-1001", telegramUserId: "1", eventId: checkout.event.id, action: "complete",
+  });
+
+  const housekeeping = database.data.checkoutEvents[checkout.event.id].metadata.housekeeping;
+  assert.equal(housekeeping.bedDoneByUserId, "staff");
+  assert.equal(housekeeping.cleaningDoneByUserId, "staff");
+  assert.equal(housekeeping.completedByUserId, "staff");
+  assert.equal(housekeeping.bedDoneAt, housekeeping.completedAt);
+  assert.equal(housekeeping.cleaningDoneAt, housekeeping.completedAt);
+  assert.equal(database.data.rooms[room.id].status, "ready");
+});
+
+test("complete preserves previously recorded housekeeping timestamps and authors", async () => {
+  const database = createFakeDatabase({
+    tenants: { "hotel-a": { id: "hotel-a", name: "Hotel A", slug: "hotel-a", active: true } },
+    tenantSettings: { "hotel-a": { tenantId: "hotel-a", notifications: { telegram: { enabled: true, chatId: "-1001" } } } },
+    users: {
+      first: { id: "first", email: "first@example.test", displayName: "First", active: true, telegramUserId: "1" },
+      finisher: { id: "finisher", email: "finisher@example.test", displayName: "Finisher", active: true, telegramUserId: "2" },
+    },
+    memberships: {
+      first: { id: "first-member", tenantId: "hotel-a", userId: "first", role: "staff" },
+      finisher: { id: "finisher-member", tenantId: "hotel-a", userId: "finisher", role: "staff" },
+    },
+  });
+  const room = await createRoom(database, "hotel-a", { number: "206", status: "occupied" });
+  const checkout = await registerCheckout(database, "hotel-a", room.id, "manual");
+  const action = { tenantId: "hotel-a", chatId: "-1001", eventId: checkout.event.id };
+  await handleHousekeepingAction(database, { ...action, telegramUserId: "1", action: "bed_done" });
+  await handleHousekeepingAction(database, { ...action, telegramUserId: "1", action: "cleaning_done" });
+  const prior = { ...database.data.checkoutEvents[checkout.event.id].metadata.housekeeping };
+
+  await handleHousekeepingAction(database, { ...action, telegramUserId: "2", action: "complete" });
+
+  const housekeeping = database.data.checkoutEvents[checkout.event.id].metadata.housekeeping;
+  assert.equal(housekeeping.bedDoneByUserId, "first");
+  assert.equal(housekeeping.bedDoneAt, prior.bedDoneAt);
+  assert.equal(housekeeping.cleaningDoneByUserId, "first");
+  assert.equal(housekeeping.cleaningDoneAt, prior.cleaningDoneAt);
+  assert.equal(housekeeping.completedByUserId, "finisher");
+  assert.ok(housekeeping.completedAt);
+  assert.equal(database.data.rooms[room.id].status, "ready");
+});
+
 test("personal Telegram pairing supports every tenant role and stores only the authenticated user", async () => {
   const tenantId = "hotel-a";
   const users = Object.fromEntries(
