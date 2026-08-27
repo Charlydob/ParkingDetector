@@ -145,7 +145,7 @@ export function UserManagementPanel({
             <span>Email</span>
             <span>Name</span>
             <span>Role</span>
-            <span>Status</span>
+            <span>Telegram</span>
             <span>Actions</span>
           </div>
           {members.length ? (
@@ -166,7 +166,7 @@ export function UserManagementPanel({
                   <option value="manager">Manager</option>
                   <option value="tenant_admin">Tenant admin</option>
                 </select>
-                <span>{member.status}</span>
+                <span>{member.user.telegramUserId ? `Connected${member.user.telegramUsername ? ` · @${member.user.telegramUsername}` : ""}` : "Not connected"}</span>
                 <button
                   type="button"
                   onClick={() => void run(`revoke-member-${member.id}`, () => onRevokeMember(member.id))}

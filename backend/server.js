@@ -36,10 +36,13 @@ import {
 import { sendTestCheckoutNotification } from "./services/notificationService.js";
 import {
   connectTelegramChat,
+  connectTelegramStaff,
+  createStaffPairingCode,
   createTelegramPairingCode,
   disconnectTelegramChat,
   getHousekeepingBoard,
   handleHousekeepingAction,
+  registerManualTelegramCheckout,
   saveHousekeepingBoardMessage,
   saveCheckoutTelegramMessage,
   validateTelegramIntegrationSecret,
@@ -558,6 +561,22 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "POST" && pathname === "/api/integrations/telegram/staff/connect") {
+      if (!validateTelegramIntegrationSecret(request.headers)) {
+        sendJson(response, 401, { success: false, error: "Unauthorized." }); return;
+      }
+      sendJson(response, 200, await connectTelegramStaff(database, await readJsonBody(request)));
+      return;
+    }
+
+    if (request.method === "POST" && pathname === "/api/integrations/telegram/manual-checkout") {
+      if (!validateTelegramIntegrationSecret(request.headers)) {
+        sendJson(response, 401, { success: false, error: "Unauthorized." }); return;
+      }
+      sendJson(response, 200, await registerManualTelegramCheckout(database, await readJsonBody(request)));
+      return;
+    }
+
     if (
       request.method === "GET" &&
       pathname === "/api/integrations/telegram/housekeeping-board"
@@ -573,6 +592,7 @@ const server = createServer(async (request, response) => {
         await getHousekeepingBoard(database, {
           tenantId: parsedUrl.searchParams.get("tenantId"),
           tenantSlug: parsedUrl.searchParams.get("tenantSlug") || parsedUrl.searchParams.get("slug"),
+          chatId: parsedUrl.searchParams.get("chatId"),
         }),
       );
       return;
@@ -614,6 +634,13 @@ const server = createServer(async (request, response) => {
       const tenantId = requireTenant(context.session);
       requireTenantAdmin(context.session, tenantId);
       sendJson(response, 200, await createTelegramPairingCode(database, tenantId));
+      return;
+    }
+
+    if (request.method === "POST" && pathname === "/api/integrations/telegram/staff-pairing-code") {
+      const context = await getProtectedContext(request);
+      const tenantId = requireTenant(context.session);
+      sendJson(response, 200, await createStaffPairingCode(database, context.session, tenantId));
       return;
     }
 

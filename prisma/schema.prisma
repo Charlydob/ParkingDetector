@@ -8,17 +8,20 @@ datasource db {
 }
 
 model User {
-  id           String       @id @default(uuid()) @db.Uuid
-  email        String       @unique
-  passwordHash String       @map("password_hash")
-  displayName  String       @map("display_name")
-  globalRole   String?      @map("global_role")
-  active       Boolean      @default(true)
-  createdAt    DateTime     @default(now()) @map("created_at")
-  updatedAt    DateTime     @updatedAt @map("updated_at")
-  invitations  Invitation[] @relation("InvitationInviter")
-  memberships  Membership[]
-  sessions     Session[]
+  id               String       @id @default(uuid()) @db.Uuid
+  email            String       @unique
+  passwordHash     String       @map("password_hash")
+  displayName      String       @map("display_name")
+  globalRole       String?      @map("global_role")
+  telegramUserId   String?      @unique @map("telegram_user_id")
+  telegramUsername String?      @map("telegram_username")
+  telegramLinkedAt DateTime?    @map("telegram_linked_at")
+  active           Boolean      @default(true)
+  createdAt        DateTime     @default(now()) @map("created_at")
+  updatedAt        DateTime     @updatedAt @map("updated_at")
+  invitations      Invitation[] @relation("InvitationInviter")
+  memberships      Membership[]
+  sessions         Session[]
 
   @@map("users")
 }

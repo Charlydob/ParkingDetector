@@ -21,6 +21,9 @@ export interface UserProfile {
   email: string;
   displayName?: string;
   globalRole?: GlobalRole;
+  telegramUserId?: string | null;
+  telegramUsername?: string | null;
+  telegramLinkedAt?: string | null;
   createdAt: string;
   updatedAt?: string;
 }
@@ -36,7 +39,7 @@ export interface TenantMembership {
 
 export interface TenantMember extends TenantMembership {
   status: "active";
-  user: Pick<UserProfile, "id" | "email" | "displayName">;
+  user: Pick<UserProfile, "id" | "email" | "displayName" | "telegramUserId" | "telegramUsername" | "telegramLinkedAt">;
 }
 
 export interface UserInvitation {
