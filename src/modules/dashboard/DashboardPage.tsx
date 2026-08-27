@@ -55,6 +55,15 @@ import type { Detection } from "../../types/detection";
 
 type HousekeepingAction = "claim" | "bed_done" | "cleaning_done" | "complete" | "assign";
 type PermissionState = NotificationPermission | "unsupported";
+type PushDisplayStatus = "unknown" | "pending" | "success" | "error";
+
+type PushDiagnostic = {
+  received: boolean;
+  displayStatus: PushDisplayStatus;
+  error: string;
+  receivedAt: string;
+  displayedAt: string;
+};
 
 function isToday(value?: string | null): boolean {
   if (!value) {
@@ -119,6 +128,28 @@ function scheduledPushFailureMessage(status: ScheduledPushTestStatus): string {
   return status.httpStatus ? `${message} (HTTP ${status.httpStatus})` : message;
 }
 
+function pushDiagnosticStatusLabel(status: PushDisplayStatus): string {
+  if (status === "success") {
+    return "success";
+  }
+  if (status === "error") {
+    return "error";
+  }
+  if (status === "pending") {
+    return "pendiente";
+  }
+
+  return "sin datos";
+}
+
+function currentTimeLabel(): string {
+  return new Date().toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 function selectedRoomFromBoard(board: HousekeepingBoard, current?: HousekeepingRoomItem) {
   const queryRoom = new URLSearchParams(window.location.search).get("housekeepingRoom");
   const needle = queryRoom || current?.roomNumber || current?.roomId || "";
@@ -149,6 +180,13 @@ export function DashboardPage({ enabledModules }: { enabledModules: Record<Modul
   const [pushNotice, setPushNotice] = useState("");
   const [scheduledPushTestId, setScheduledPushTestId] = useState("");
   const [testDelay, setTestDelay] = useState(20);
+  const [pushDiagnostic, setPushDiagnostic] = useState<PushDiagnostic>({
+    received: false,
+    displayStatus: "unknown",
+    error: "",
+    receivedAt: "",
+    displayedAt: "",
+  });
   const [board, setBoard] = useState<HousekeepingBoard>();
   const [staff, setStaff] = useState<HousekeepingStaffMember[]>([]);
   const [selectedRoom, setSelectedRoom] = useState<HousekeepingRoomItem>();
@@ -244,12 +282,35 @@ export function DashboardPage({ enabledModules }: { enabledModules: Record<Modul
     }
 
     const handler = (event: MessageEvent) => {
-      if (event.data?.type !== "HOTELAPP_PUSH_RECEIVED") {
-        return;
-      }
+      const message = event.data;
 
-      setPushNotice(event.data.payload?.body || "Nueva notificacion recibida.");
-      void refreshHousekeeping().catch(() => undefined);
+      if (message?.type === "HOTELAPP_PUSH_RECEIVED") {
+        setPushDiagnostic({
+          received: true,
+          displayStatus: "pending",
+          error: "",
+          receivedAt: currentTimeLabel(),
+          displayedAt: "",
+        });
+        setPushNotice(message.payload?.body || "Nueva notificacion recibida.");
+        void refreshHousekeeping().catch(() => undefined);
+      } else if (message?.type === "HOTELAPP_NOTIFICATION_DISPLAYED") {
+        setPushDiagnostic((current) => ({
+          ...current,
+          received: true,
+          displayStatus: "success",
+          error: "",
+          displayedAt: currentTimeLabel(),
+        }));
+      } else if (message?.type === "HOTELAPP_NOTIFICATION_DISPLAY_ERROR") {
+        setPushDiagnostic((current) => ({
+          ...current,
+          received: true,
+          displayStatus: "error",
+          error: typeof message.error === "string" ? message.error : "Error desconocido",
+          displayedAt: currentTimeLabel(),
+        }));
+      }
     };
 
     navigator.serviceWorker.addEventListener("message", handler);
@@ -611,6 +672,37 @@ export function DashboardPage({ enabledModules }: { enabledModules: Record<Modul
                 </button>
               </div>
             )}
+            <div className="push-diagnostic" aria-live="polite">
+              <strong>Ultimo push</strong>
+              <div>
+                <span>Recibido por service worker</span>
+                <b>{pushDiagnostic.received ? "si" : "no"}</b>
+              </div>
+              <div>
+                <span>showNotification</span>
+                <b className={`push-diagnostic-status ${pushDiagnostic.displayStatus}`}>
+                  {pushDiagnosticStatusLabel(pushDiagnostic.displayStatus)}
+                </b>
+              </div>
+              {pushDiagnostic.receivedAt && (
+                <div>
+                  <span>Recibido a las</span>
+                  <b>{pushDiagnostic.receivedAt}</b>
+                </div>
+              )}
+              {pushDiagnostic.displayedAt && (
+                <div>
+                  <span>Actualizado a las</span>
+                  <b>{pushDiagnostic.displayedAt}</b>
+                </div>
+              )}
+              {pushDiagnostic.error && (
+                <div className="push-diagnostic-error">
+                  <span>Error</span>
+                  <code>{pushDiagnostic.error}</code>
+                </div>
+              )}
+            </div>
             {pushNotice && <p className="telegram-link-notice" role="status">{pushNotice}</p>}
           </div>
         </section>

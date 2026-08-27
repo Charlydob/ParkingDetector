@@ -407,6 +407,62 @@ button:disabled {
   width: 100%;
 }
 
+.push-diagnostic {
+  border-top: 1px solid #edf1f5;
+  display: grid;
+  gap: 7px;
+  padding-top: 10px;
+}
+
+.push-diagnostic > strong {
+  color: #263244;
+  font-size: 0.86rem;
+}
+
+.push-diagnostic div {
+  align-items: start;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.push-diagnostic span {
+  color: #667287;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.push-diagnostic b {
+  color: #263244;
+  font-size: 0.82rem;
+}
+
+.push-diagnostic-status.success {
+  color: #16784a;
+}
+
+.push-diagnostic-status.error {
+  color: #b42318;
+}
+
+.push-diagnostic-status.pending {
+  color: #996400;
+}
+
+.push-diagnostic-error {
+  grid-template-columns: 1fr;
+}
+
+.push-diagnostic-error code {
+  background: #fff4f2;
+  border: 1px solid #ffd7d2;
+  border-radius: 6px;
+  color: #9f1f16;
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+  padding: 6px 8px;
+}
+
 .housekeeping-row {
   align-items: center;
   background: #ffffff;
