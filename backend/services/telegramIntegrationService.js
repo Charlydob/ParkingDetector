@@ -525,8 +525,11 @@ export async function handleHousekeepingAction(database, input = {}) {
     } else if (action === "cleaning_done" && !housekeeping.cleaningDoneAt) {
       Object.assign(housekeeping, { cleaningDoneByUserId: actor.user.id, cleaningDoneAt: timestamp });
     } else if (action === "complete") {
-      if (!housekeeping.bedDoneAt || !housekeeping.cleaningDoneAt) {
-        const error = new Error("Bed and cleaning tasks must be completed first."); error.statusCode = 409; throw error;
+      if (!housekeeping.bedDoneAt) {
+        Object.assign(housekeeping, { bedDoneByUserId: actor.user.id, bedDoneAt: timestamp });
+      }
+      if (!housekeeping.cleaningDoneAt) {
+        Object.assign(housekeeping, { cleaningDoneByUserId: actor.user.id, cleaningDoneAt: timestamp });
       }
       if (!housekeeping.completedAt) {
         Object.assign(housekeeping, { completedByUserId: actor.user.id, completedAt: timestamp });
