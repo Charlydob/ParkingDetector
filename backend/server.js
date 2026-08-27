@@ -18,7 +18,9 @@ import {
   handleCheckoutRoute,
   handlePublicCheckoutRoute,
 } from "./routes/checkoutRoutes.js";
+import { handleHousekeepingRoute } from "./routes/housekeepingRoutes.js";
 import { handleInvitationRoute } from "./routes/invitationRoutes.js";
+import { handlePushRoute } from "./routes/pushRoutes.js";
 import { handleUserManagementRoute } from "./routes/userManagementRoutes.js";
 import { handleVersionRoute } from "./routes/versionRoutes.js";
 import {
@@ -34,6 +36,7 @@ import {
   updateTenantSettings,
 } from "./services/tenantSettingsService.js";
 import { sendTestCheckoutNotification } from "./services/notificationService.js";
+import { processDueScheduledPushes } from "./services/webPushService.js";
 import {
   connectTelegramChat,
   connectTelegramStaff,
@@ -414,6 +417,7 @@ try {
 }
 
 let polling = false;
+let scheduledPushPolling = false;
 
 async function pollFrigate() {
   if (polling) {
@@ -438,6 +442,22 @@ async function pollFrigate() {
     console.warn(`[Frigate] Poll failed: ${error.message}`);
   } finally {
     polling = false;
+  }
+}
+
+async function pollScheduledPushes() {
+  if (scheduledPushPolling) {
+    return;
+  }
+
+  scheduledPushPolling = true;
+  try {
+    await processDueScheduledPushes(database);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "unknown error";
+    console.warn(`[WebPush] scheduled push poll failed: ${message}`);
+  } finally {
+    scheduledPushPolling = false;
   }
 }
 
@@ -692,6 +712,32 @@ const server = createServer(async (request, response) => {
         diagnostics: result.diagnostics || {},
       });
       return;
+    }
+
+    if (pathname.startsWith("/api/push/")) {
+      const result = await handlePushRoute({
+        request,
+        pathname,
+        body: request.method === "GET" ? {} : await readJsonBody(request),
+        context: await getProtectedContext(request),
+      });
+
+      if (sendRouteResult(response, result)) {
+        return;
+      }
+    }
+
+    if (pathname.startsWith("/api/housekeeping/")) {
+      const result = await handleHousekeepingRoute({
+        request,
+        pathname,
+        body: request.method === "GET" ? {} : await readJsonBody(request),
+        context: await getProtectedContext(request),
+      });
+
+      if (sendRouteResult(response, result)) {
+        return;
+      }
     }
 
     if (pathname.startsWith("/api/checkout/")) {
@@ -1398,3 +1444,9 @@ function scheduleNextPoll() {
 }
 
 void pollFrigate().finally(scheduleNextPoll);
+
+const scheduledPushInterval = setInterval(() => {
+  void pollScheduledPushes();
+}, Number(process.env.SCHEDULED_PUSH_POLL_INTERVAL_MS || 1500));
+scheduledPushInterval.unref?.();
+void pollScheduledPushes();

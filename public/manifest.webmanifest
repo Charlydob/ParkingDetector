@@ -1,0 +1,19 @@
+{
+  "id": "/?source=pwa",
+  "name": "HotelApp",
+  "short_name": "HotelApp",
+  "description": "Hotel operations dashboard.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f4f6f8",
+  "theme_color": "#1f7a5a",
+  "icons": [
+    {
+      "src": "/hotelapp-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -1,0 +1,318 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import webpush from "web-push";
+import {
+  ensureWebPushConfig,
+  getPushStatus,
+  processDueScheduledPushes,
+  schedulePush,
+  sendPushToSubscription,
+  sendTestPushToSubscription,
+  setWebPushTestHooks,
+  subscribeUserPush,
+  unsubscribeUserPush,
+  updatePushPreference,
+} from "./webPushService.js";
+
+function createFakeDatabase(initial = {}) {
+  const data = {
+    webPushConfigs: {},
+    pushSubscriptions: {},
+    pushPreferences: {},
+    scheduledPushes: {},
+    users: {},
+    memberships: {},
+    tenants: {},
+    rooms: {},
+    checkoutEvents: {},
+    ...initial,
+  };
+
+  return {
+    data,
+    async setRecord(collection, id, value) {
+      data[collection] ||= {};
+      data[collection][id] = { ...value, id };
+      return data[collection][id];
+    },
+    async getRecord(collection, id) {
+      return data[collection]?.[id];
+    },
+    async listRecords(collection) {
+      return Object.values(data[collection] || {});
+    },
+    async listTenantRecords(collection, tenantId) {
+      return Object.values(data[collection] || {}).filter((record) => record.tenantId === tenantId);
+    },
+  };
+}
+
+function browserSubscription(endpoint) {
+  return {
+    endpoint,
+    keys: {
+      p256dh: `p256dh-${endpoint}`,
+      auth: `auth-${endpoint}`,
+    },
+  };
+}
+
+function validVapidKeys() {
+  return webpush.generateVAPIDKeys();
+}
+
+test("VAPID keys are generated once and reused across service calls", async () => {
+  const database = createFakeDatabase();
+  let generated = 0;
+  const reset = setWebPushTestHooks({
+    generateVapidKeys() {
+      generated += 1;
+      return { publicKey: `public-${generated}`, privateKey: `private-${generated}` };
+    },
+  });
+
+  try {
+    const first = await ensureWebPushConfig(database);
+    const second = await ensureWebPushConfig(database);
+
+    assert.equal(generated, 1);
+    assert.equal(first.publicKey, "public-1");
+    assert.equal(second.publicKey, "public-1");
+
+    setWebPushTestHooks({
+      generateVapidKeys() {
+        generated += 1;
+        return { publicKey: "new-public", privateKey: "new-private" };
+      },
+    });
+
+    const afterRestart = await ensureWebPushConfig(database);
+    assert.equal(afterRestart.publicKey, "public-1");
+    assert.equal(generated, 1);
+  } finally {
+    reset();
+  }
+});
+
+test("push status exposes only the VAPID public key", async () => {
+  const database = createFakeDatabase();
+  const reset = setWebPushTestHooks({
+    generateVapidKeys: () => ({ publicKey: "public-key", privateKey: "private-key" }),
+  });
+
+  try {
+    const status = await getPushStatus(database, { userId: "user-a", tenantId: "hotel-a" });
+    const serialized = JSON.stringify(status);
+
+    assert.equal(status.vapidPublicKey, "public-key");
+    assert.equal(serialized.includes("private-key"), false);
+    assert.equal(Object.hasOwn(status, "privateKey"), false);
+  } finally {
+    reset();
+  }
+});
+
+test("users can register multiple devices and cannot spoof another userId", async () => {
+  const database = createFakeDatabase();
+  const reset = setWebPushTestHooks({
+    generateVapidKeys: () => ({ publicKey: "public", privateKey: "private" }),
+  });
+
+  try {
+    await subscribeUserPush(database, {
+      userId: "real-user",
+      tenantId: "hotel-a",
+      subscription: { ...browserSubscription("endpoint-1"), userId: "attacker" },
+      userAgent: "iPhone",
+    });
+    await subscribeUserPush(database, {
+      userId: "real-user",
+      tenantId: "hotel-a",
+      subscription: browserSubscription("endpoint-2"),
+      userAgent: "Desktop",
+    });
+
+    const subscriptions = Object.values(database.data.pushSubscriptions);
+    assert.equal(subscriptions.length, 2);
+    assert.equal(subscriptions.every((subscription) => subscription.userId === "real-user"), true);
+    assert.deepEqual(
+      subscriptions.map((subscription) => subscription.endpoint).sort(),
+      ["endpoint-1", "endpoint-2"],
+    );
+
+    const preference = Object.values(database.data.pushPreferences)[0];
+    assert.equal(preference.enabled, true);
+    assert.equal(preference.newCheckout, true);
+    assert.equal(preference.assignedToMe, true);
+    assert.equal(preference.roomCompleted, false);
+  } finally {
+    reset();
+  }
+});
+
+test("unsubscribe disables only the current user's device", async () => {
+  const database = createFakeDatabase();
+  const reset = setWebPushTestHooks({
+    generateVapidKeys: () => ({ publicKey: "public", privateKey: "private" }),
+  });
+
+  try {
+    await subscribeUserPush(database, {
+      userId: "user-a",
+      tenantId: "hotel-a",
+      subscription: browserSubscription("endpoint-a"),
+    });
+    await subscribeUserPush(database, {
+      userId: "user-b",
+      tenantId: "hotel-a",
+      subscription: browserSubscription("endpoint-b"),
+    });
+
+    await unsubscribeUserPush(database, { userId: "user-a", endpoint: "endpoint-a" });
+
+    assert.ok(Object.values(database.data.pushSubscriptions).find((item) => item.endpoint === "endpoint-a").disabledAt);
+    assert.equal(Object.values(database.data.pushSubscriptions).find((item) => item.endpoint === "endpoint-b").disabledAt, null);
+  } finally {
+    reset();
+  }
+});
+
+test("404 and 410 Web Push responses disable dead subscriptions", async () => {
+  const database = createFakeDatabase();
+  const reset = setWebPushTestHooks({
+    generateVapidKeys: validVapidKeys,
+    sendNotification: async () => {
+      const error = new Error("gone");
+      error.statusCode = 410;
+      throw error;
+    },
+  });
+
+  try {
+    const subscription = await subscribeUserPush(database, {
+      userId: "user-a",
+      tenantId: "hotel-a",
+      subscription: browserSubscription("endpoint-a"),
+    });
+    const result = await sendPushToSubscription(
+      database,
+      database.data.pushSubscriptions[subscription.id],
+      { title: "HotelApp" },
+    );
+
+    assert.equal(result.sent, false);
+    assert.equal(result.disabled, true);
+    assert.ok(database.data.pushSubscriptions[subscription.id].disabledAt);
+    assert.equal(database.data.pushSubscriptions[subscription.id].failureCount, 1);
+  } finally {
+    reset();
+  }
+});
+
+test("push preferences are isolated by user and tenant", async () => {
+  const database = createFakeDatabase();
+
+  await updatePushPreference(database, "user-a", "hotel-a", { enabled: false, roomCompleted: true });
+  await updatePushPreference(database, "user-a", "hotel-b", { enabled: true, newCheckout: false });
+  await updatePushPreference(database, "user-b", "hotel-a", { enabled: true });
+
+  const preferences = Object.values(database.data.pushPreferences);
+  assert.equal(preferences.length, 3);
+  assert.equal(preferences.find((item) => item.userId === "user-a" && item.tenantId === "hotel-a").roomCompleted, true);
+  assert.equal(preferences.find((item) => item.userId === "user-a" && item.tenantId === "hotel-b").newCheckout, false);
+  assert.equal(preferences.find((item) => item.userId === "user-b" && item.tenantId === "hotel-a").enabled, true);
+});
+
+test("platform_admin can store preferences for an active tenant without membership", async () => {
+  const database = createFakeDatabase({
+    users: {
+      admin: { id: "admin", email: "admin@example.test", displayName: "Admin", globalRole: "platform_admin", active: true },
+    },
+    tenants: {
+      "hotel-a": { id: "hotel-a", slug: "hotel-a", name: "Hotel A", active: true },
+    },
+  });
+
+  const preference = await updatePushPreference(database, "admin", "hotel-a", { enabled: true });
+  assert.equal(preference.userId, "admin");
+  assert.equal(preference.tenantId, "hotel-a");
+  assert.equal(Object.values(database.data.memberships).length, 0);
+});
+
+test("scheduled push is persisted and sent when due without a frontend timer", async () => {
+  const sent = [];
+  const database = createFakeDatabase({
+    tenants: {
+      "hotel-a": { id: "hotel-a", slug: "hotel-a", name: "Hotel A", active: true },
+    },
+  });
+  const reset = setWebPushTestHooks({
+    generateVapidKeys: validVapidKeys,
+    sendNotification: async (subscription, payload) => {
+      sent.push({ subscription, payload: JSON.parse(payload) });
+    },
+  });
+
+  try {
+    await subscribeUserPush(database, {
+      userId: "user-a",
+      tenantId: "hotel-a",
+      subscription: browserSubscription("endpoint-a"),
+    });
+    const scheduled = await schedulePush(database, {
+      userId: "user-a",
+      tenantId: "hotel-a",
+      endpoint: "endpoint-a",
+      title: "HotelApp",
+      body: "scheduled",
+      url: "/t/hotel-a/",
+      sendAt: new Date(Date.now() - 1000).toISOString(),
+    });
+
+    assert.equal(database.data.scheduledPushes[scheduled.id].status, "pending");
+
+    const results = await processDueScheduledPushes(database);
+    assert.equal(results.length, 1);
+    assert.equal(results[0].sent, true);
+    assert.equal(database.data.scheduledPushes[scheduled.id].status, "sent");
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].payload.body, "scheduled");
+  } finally {
+    reset();
+  }
+});
+
+test("test push uses the backend web push path", async () => {
+  const sent = [];
+  const database = createFakeDatabase({
+    tenants: {
+      "hotel-a": { id: "hotel-a", slug: "hotel-a", name: "Hotel A", active: true },
+    },
+  });
+  const reset = setWebPushTestHooks({
+    generateVapidKeys: validVapidKeys,
+    sendNotification: async (subscription, payload) => {
+      sent.push({ subscription, payload: JSON.parse(payload) });
+    },
+  });
+
+  try {
+    await subscribeUserPush(database, {
+      userId: "user-a",
+      tenantId: "hotel-a",
+      subscription: browserSubscription("endpoint-a"),
+    });
+
+    const result = await sendTestPushToSubscription(database, {
+      userId: "user-a",
+      endpoint: "endpoint-a",
+      tenant: database.data.tenants["hotel-a"],
+    });
+
+    assert.equal(result.sent, true);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].payload.type, "push.test");
+  } finally {
+    reset();
+  }
+});

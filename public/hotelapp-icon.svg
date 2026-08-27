@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="HotelApp">
+  <rect width="512" height="512" rx="96" fill="#1f7a5a"/>
+  <path fill="#ffffff" d="M136 128h52v104h136V128h52v256h-52V280H188v104h-52V128Z"/>
+  <path fill="#cce8dc" d="M112 400h288v40H112z"/>
+</svg>

@@ -15,7 +15,8 @@ import {
   updateKeyIdentifier,
   updateRoom,
 } from "../services/checkoutService.js";
-import { requireModule, requireTenantAdmin } from "../services/tenantService.js";
+import { requireModule, requireTenantAdmin, getTenantRole } from "../services/tenantService.js";
+import { requireHousekeepingPermission } from "../services/housekeepingPermissions.js";
 
 function publicBaseUrl(request) {
   return (
@@ -188,6 +189,7 @@ export async function handleCheckoutRoute({ request, pathname, parsedUrl, body, 
   }
 
   if (request.method === "POST" && pathname === "/api/checkout/manual") {
+    requireHousekeepingPermission(getTenantRole(session, tenantId), "manage");
     const roomId = String(body.roomId || "").trim();
     return {
       status: 201,

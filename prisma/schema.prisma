@@ -21,6 +21,9 @@ model User {
   updatedAt        DateTime     @updatedAt @map("updated_at")
   invitations      Invitation[] @relation("InvitationInviter")
   memberships      Membership[]
+  pushPreferences  PushPreference[]
+  pushSubscriptions PushSubscription[]
+  scheduledPushes  ScheduledPush[]
   sessions         Session[]
 
   @@map("users")
@@ -54,10 +57,85 @@ model Tenant {
   memberships     Membership[]
   modules         TenantModule[]
   occupancyCycles OccupancyCycle[]
+  pushPreferences PushPreference[]
   rooms           Room[]
+  scheduledPushes ScheduledPush[]
   settings        TenantSettings?
 
   @@map("tenants")
+}
+
+model WebPushConfig {
+  id         String   @id
+  publicKey  String   @map("public_key")
+  privateKey String   @map("private_key")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@map("web_push_configs")
+}
+
+model PushSubscription {
+  id            String          @id @default(uuid()) @db.Uuid
+  userId        String          @map("user_id") @db.Uuid
+  endpoint      String          @unique
+  p256dh        String
+  auth          String
+  userAgent     String?         @map("user_agent")
+  failureCount  Int             @default(0) @map("failure_count")
+  createdAt     DateTime        @default(now()) @map("created_at")
+  updatedAt     DateTime        @updatedAt @map("updated_at")
+  lastSuccessAt DateTime?       @map("last_success_at")
+  lastFailureAt DateTime?       @map("last_failure_at")
+  disabledAt    DateTime?       @map("disabled_at")
+  scheduledPushes ScheduledPush[]
+  user          User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([disabledAt])
+  @@map("push_subscriptions")
+}
+
+model PushPreference {
+  id            String   @id @default(uuid()) @db.Uuid
+  userId        String   @map("user_id") @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  enabled       Boolean  @default(true)
+  newCheckout   Boolean  @default(true) @map("new_checkout")
+  assignedToMe  Boolean  @default(true) @map("assigned_to_me")
+  roomCompleted Boolean  @default(false) @map("room_completed")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, tenantId])
+  @@index([tenantId])
+  @@map("push_preferences")
+}
+
+model ScheduledPush {
+  id             String            @id @default(uuid()) @db.Uuid
+  userId         String            @map("user_id") @db.Uuid
+  tenantId       String            @map("tenant_id") @db.Uuid
+  subscriptionId String?           @map("subscription_id") @db.Uuid
+  endpoint       String?
+  title          String
+  body           String
+  url            String
+  sendAt         DateTime          @map("send_at")
+  status         String            @default("pending")
+  error          String?
+  createdAt      DateTime          @default(now()) @map("created_at")
+  sentAt         DateTime?         @map("sent_at")
+  subscription   PushSubscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  tenant         Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status, sendAt])
+  @@index([userId])
+  @@index([tenantId])
+  @@map("scheduled_pushes")
 }
 
 model Membership {

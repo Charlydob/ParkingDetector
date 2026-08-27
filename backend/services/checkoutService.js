@@ -4,6 +4,7 @@ import {
   sendHousekeepingBoardRefresh,
 } from "./notificationService.js";
 import { getTenantSettings } from "./tenantSettingsService.js";
+import { sendNewCheckoutPush } from "./webPushService.js";
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 
 const CHECKOUT_ATTEMPT_TOKEN_TTL_SECONDS = Number(
@@ -754,13 +755,27 @@ export async function registerCheckout(database, tenantId, roomId, source, optio
     getTenantSettings(database, tenantId),
     getSavedHousekeepingBoard(database, tenantId),
   ]);
-  void sendCheckoutNotification({
-    database,
-    tenant,
-    tenantSettings,
-    room: result.room,
-    event: result.event,
-    housekeepingBoard,
+  void Promise.allSettled([
+    sendCheckoutNotification({
+      database,
+      tenant,
+      tenantSettings,
+      room: result.room,
+      event: result.event,
+      housekeepingBoard,
+    }),
+    sendNewCheckoutPush(database, {
+      tenant,
+      room: result.room,
+      event: result.event,
+    }),
+  ]).then((results) => {
+    const webPushFailure = results[1];
+    if (webPushFailure?.status === "rejected") {
+      const error = webPushFailure.reason;
+      const message = error instanceof Error ? error.message : "unknown error";
+      console.warn(`[WebPush] checkout push failed: ${message}`);
+    }
   });
 
   return {

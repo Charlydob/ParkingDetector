@@ -8,6 +8,10 @@ const MODEL_BY_COLLECTION = {
   sessions: "session",
   tenants: "tenant",
   memberships: "membership",
+  webPushConfigs: "webPushConfig",
+  pushSubscriptions: "pushSubscription",
+  pushPreferences: "pushPreference",
+  scheduledPushes: "scheduledPush",
   tenantSettings: "tenantSettings",
   rooms: "room",
   keyIdentifiers: "keyIdentifier",
@@ -53,6 +57,11 @@ const DATE_FIELDS = new Set([
   "checkoutDueDate",
   "lastCleanedAt",
   "telegramMessageDeletedAt",
+  "lastSuccessAt",
+  "lastFailureAt",
+  "disabledAt",
+  "sendAt",
+  "sentAt",
 ]);
 
 const JSON_FIELDS = new Set([

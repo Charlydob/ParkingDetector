@@ -804,6 +804,180 @@ export async function manualCheckout(roomId: string): Promise<{ duplicate: boole
   });
 }
 
+export interface PushPreference {
+  id?: string;
+  userId?: string;
+  tenantId?: string;
+  enabled: boolean;
+  newCheckout: boolean;
+  assignedToMe: boolean;
+  roomCompleted: boolean;
+}
+
+export interface PushStatus {
+  supported: boolean;
+  configured: boolean;
+  vapidPublicKey: string;
+  subscriptionCount: number;
+  subscriptions: Array<{
+    id: string;
+    endpoint: string;
+    userAgent?: string;
+    createdAt?: string;
+    updatedAt?: string;
+    lastSuccessAt?: string | null;
+    lastFailureAt?: string | null;
+    disabledAt?: string | null;
+  }>;
+  preference?: PushPreference;
+}
+
+export interface HousekeepingActor {
+  userId: string;
+  displayName: string;
+  telegramUsername?: string;
+  role?: TenantRole | "platform_admin" | null;
+}
+
+export interface HousekeepingState {
+  assignedTo?: HousekeepingActor | null;
+  assignedAt?: string | null;
+  bedDoneBy?: HousekeepingActor | null;
+  bedDoneAt?: string | null;
+  cleaningDoneBy?: HousekeepingActor | null;
+  cleaningDoneAt?: string | null;
+  completedBy?: HousekeepingActor | null;
+  completedAt?: string | null;
+}
+
+export interface HousekeepingRoomItem {
+  roomId: string;
+  roomNumber: string;
+  roomName: string;
+  status: string;
+  accessCode?: string | null;
+  eventId: string;
+  checkoutTimestamp: string;
+  source: string;
+  cleanedTimestamp?: string;
+  housekeeping: HousekeepingState;
+}
+
+export interface HousekeepingBoard {
+  tenant: { id: string; name: string; slug: string };
+  updatedAt: string;
+  date: string;
+  timezone: string;
+  checkoutToday: Array<{
+    roomId: string;
+    roomNumber: string;
+    roomName: string;
+    status: string;
+    accessCode?: string | null;
+    room: string;
+    checkoutDueDate: string;
+    source: string;
+  }>;
+  pendingCleaning: HousekeepingRoomItem[];
+  done: HousekeepingRoomItem[];
+  items: HousekeepingRoomItem[];
+  allRooms: Array<{
+    roomId: string;
+    roomNumber: string;
+    roomName: string;
+    status: string;
+  }>;
+  summary: {
+    checkoutToday: number;
+    waiting: number;
+    cleaning: number;
+    done: number;
+    total: number;
+  };
+}
+
+export interface HousekeepingStaffMember {
+  userId: string;
+  displayName: string;
+  email: string;
+  telegramUsername?: string;
+  telegramLinked: boolean;
+  role: TenantRole | "platform_admin";
+}
+
+export async function getPushStatus(): Promise<PushStatus> {
+  return requestJson<PushStatus>("/api/push/status");
+}
+
+export async function subscribePushDevice(subscription: PushSubscriptionJSON): Promise<void> {
+  await requestJson("/api/push/subscribe", {
+    method: "POST",
+    body: JSON.stringify({ subscription }),
+  });
+}
+
+export async function unsubscribePushDevice(endpoint: string): Promise<void> {
+  await requestJson("/api/push/unsubscribe", {
+    method: "POST",
+    body: JSON.stringify({ endpoint }),
+  });
+}
+
+export async function updatePushPreferences(
+  patch: Partial<PushPreference>,
+): Promise<PushPreference> {
+  return requestJson<PushPreference>("/api/push/preferences", {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+export async function sendPushTest(endpoint: string): Promise<{ success: boolean; error?: string }> {
+  return requestJson("/api/push/test", {
+    method: "POST",
+    body: JSON.stringify({ endpoint }),
+  });
+}
+
+export async function schedulePushTest(
+  endpoint: string,
+  delaySeconds: number,
+): Promise<{ success: boolean; delaySeconds: number; scheduled: { id: string; sendAt: string } }> {
+  return requestJson("/api/push/test-schedule", {
+    method: "POST",
+    body: JSON.stringify({ endpoint, delaySeconds }),
+  });
+}
+
+export async function getHousekeepingBoard(): Promise<HousekeepingBoard> {
+  return requestJson<HousekeepingBoard>("/api/housekeeping/board");
+}
+
+export async function getHousekeepingStaff(): Promise<{ members: HousekeepingStaffMember[] }> {
+  return requestJson("/api/housekeeping/staff");
+}
+
+export async function performHousekeepingAction(input: {
+  action: "claim" | "bed_done" | "cleaning_done" | "complete" | "assign";
+  eventId: string;
+  assignmentTargetUserId?: string;
+}): Promise<{ board: HousekeepingBoard }> {
+  return requestJson("/api/housekeeping/action", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function manualHousekeepingCheckout(input: {
+  roomId: string;
+  assignmentTargetUserId?: string;
+}): Promise<{ success: boolean; duplicate: boolean }> {
+  return requestJson("/api/housekeeping/manual-checkout", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 export async function getPublicCheckoutTenant(slug: string): Promise<{
   tenantName: string;
   slug: string;
