@@ -7,6 +7,7 @@ import {
   sendAssignmentPush,
   sendRoomCompletedPush,
 } from "./webPushService.js";
+import { displayNameForMembership } from "./userDisplayService.js";
 
 const PENDING_STATUSES = new Set(["ready_for_cleaning", "cleaning"]);
 const ALLOWED_ACTIONS = new Set(["claim", "bed_done", "cleaning_done", "complete", "assign"]);
@@ -87,7 +88,7 @@ async function actorHydrator(database, tenantId) {
 
     return {
       userId: user.id,
-      displayName: user.displayName || user.email,
+      displayName: displayNameForMembership(user, membership),
       ...(user.telegramUsername ? { telegramUsername: user.telegramUsername } : {}),
       ...(includeRole ? { role } : {}),
     };
@@ -304,7 +305,7 @@ export async function getHousekeepingStaff(database, tenantId, options = {}) {
     .filter(({ user }) => user && user.active !== false)
     .map(({ membership, user }) => ({
       userId: user.id,
-      displayName: user.displayName || user.email,
+      displayName: displayNameForMembership(user, membership),
       email: user.email,
       telegramUsername: cleanString(user.telegramUsername).replace(/^@/, ""),
       telegramLinked: Boolean(cleanString(user.telegramUserId)),
@@ -318,7 +319,7 @@ export async function getHousekeepingStaff(database, tenantId, options = {}) {
       if (!members.some((member) => member.userId === user.id)) {
         members.push({
           userId: user.id,
-          displayName: user.displayName || user.email,
+          displayName: displayNameForMembership(user),
           email: user.email,
           telegramUsername: cleanString(user.telegramUsername).replace(/^@/, ""),
           telegramLinked: Boolean(cleanString(user.telegramUserId)),

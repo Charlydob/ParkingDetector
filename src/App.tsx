@@ -3,12 +3,14 @@ import { AuthProvider, useAuth } from "./auth/AuthContext";
 import { AcceptInvitePage } from "./auth/AcceptInvitePage";
 import { LoginPage } from "./auth/LoginPage";
 import { CheckInDemoPage } from "./components/CheckInDemoPage";
+import { OnboardingGate } from "./components/OnboardingGate";
 import { AppLayout, type AppRoute } from "./layouts/AppLayout";
 import { AdminPage } from "./modules/admin/AdminPage";
 import { CheckoutPage } from "./modules/checkout/CheckoutPage";
 import { PublicCheckoutPage } from "./modules/checkout/PublicCheckoutPage";
 import { DashboardPage } from "./modules/dashboard/DashboardPage";
 import { ParkingPage } from "./modules/parking/ParkingPage";
+import { ProfilePage } from "./modules/profile/ProfilePage";
 import { SettingsPage } from "./modules/settings/SettingsPage";
 import { TenantUsersPage } from "./modules/settings/TenantUsersPage";
 import type { ModuleId } from "./types/modules";
@@ -18,6 +20,10 @@ function routeFromPath(): AppRoute {
 
   if (path.startsWith("/parking")) {
     return "parking";
+  }
+
+  if (path.startsWith("/housekeeping")) {
+    return "housekeeping";
   }
 
   if (path.startsWith("/checkout")) {
@@ -44,6 +50,10 @@ function routeFromPath(): AppRoute {
     return "admin";
   }
 
+  if (path.startsWith("/profile")) {
+    return "profile";
+  }
+
   return "dashboard";
 }
 
@@ -61,6 +71,10 @@ function pathFromRoute(route: AppRoute, tenantSlug?: string) {
 
   if (route === "users") {
     return `${prefix}/settings/users`;
+  }
+
+  if (route === "profile") {
+    return `${prefix}/profile`;
   }
 
   return route === "dashboard" ? `${prefix || "/"}` : `${prefix}/${route}`;
@@ -138,6 +152,7 @@ function PrivateApp() {
             !canConfigureTenant) ||
           ((route === "settings" || route === "integrations") && !canConfigureTenant) ||
           (route === "parking" && !enabledModules.parking) ||
+          (route === "housekeeping" && !enabledModules.checkout) ||
           (route === "checkout" && !enabledModules.checkout)
             ? "dashboard"
             : route
@@ -146,6 +161,8 @@ function PrivateApp() {
   const page =
     visibleRoute === "parking" ? (
       <ParkingPage />
+    ) : visibleRoute === "profile" ? (
+      <ProfilePage />
     ) : visibleRoute === "checkout" ? (
       <CheckoutPage />
     ) : visibleRoute === "admin" && session.isPlatformAdmin ? (
@@ -157,12 +174,14 @@ function PrivateApp() {
     ) : visibleRoute === "reservations" ? (
       <PlaceholderPage title="Reservations" />
     ) : (
-      <DashboardPage enabledModules={enabledModules} />
+      <DashboardPage enabledModules={enabledModules} focusHousekeeping={visibleRoute === "housekeeping"} />
     );
 
   return (
     <AppLayout route={visibleRoute} onRouteChange={navigate} enabledModules={enabledModules}>
-      <div key={activeTenantId || "no-tenant"}>{page}</div>
+      <OnboardingGate>
+        <div key={activeTenantId || "no-tenant"}>{page}</div>
+      </OnboardingGate>
     </AppLayout>
   );
 }

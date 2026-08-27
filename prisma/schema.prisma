@@ -10,6 +10,8 @@ datasource db {
 model User {
   id               String       @id @default(uuid()) @db.Uuid
   email            String       @unique
+  username         String?
+  usernameNormalized String?    @unique @map("username_normalized")
   passwordHash     String       @map("password_hash")
   displayName      String       @map("display_name")
   globalRole       String?      @map("global_role")
@@ -145,6 +147,7 @@ model Membership {
   tenantId  String   @map("tenant_id") @db.Uuid
   userId    String   @map("user_id") @db.Uuid
   role      String
+  alias     String?
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
   tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -175,6 +178,7 @@ model TenantSettings {
   telegram      Json     @default("{}")
   notifications Json     @default("{}")
   checkout      Json     @default("{}")
+  dashboard     Json     @default("{}")
   integrations  Json     @default("{}")
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")

@@ -221,6 +221,22 @@ interface ReservationDebugPayload {
   lastReservationRefreshAt?: string | null;
 }
 
+export type DashboardWidgetKey =
+  | "housekeeping"
+  | "checkouts"
+  | "reservations"
+  | "parking"
+  | "recentActivity"
+  | "notifications"
+  | "telegram"
+  | "diagnostics";
+
+export type DashboardWidgetSettings = Record<DashboardWidgetKey, boolean>;
+
+export interface DashboardSettings {
+  widgets: Record<TenantRole | "platform_admin", DashboardWidgetSettings>;
+}
+
 export const DEFAULT_RESERVATION_MAPPING: ReservationMapping = {
   reservationCode: "reservationCode",
   name: "name",
@@ -432,6 +448,28 @@ export async function getIntegrationSettings(): Promise<IntegrationSettings> {
   return normalizeIntegrationSettings(
     await requestJson<IntegrationSettings>("/api/settings/integrations"),
   );
+}
+
+export async function updateMyProfile(input: {
+  username?: string | null;
+}): Promise<UserProfile> {
+  return requestJson<UserProfile>("/api/tenant/me/profile", {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getDashboardSettings(): Promise<DashboardSettings> {
+  return requestJson<DashboardSettings>("/api/tenant/dashboard-settings");
+}
+
+export async function updateDashboardSettings(
+  settings: DashboardSettings,
+): Promise<DashboardSettings> {
+  return requestJson<DashboardSettings>("/api/tenant/dashboard-settings", {
+    method: "PATCH",
+    body: JSON.stringify(settings),
+  });
 }
 
 export async function refreshBackendReservations(): Promise<ReservationDebugPayload> {
@@ -1183,6 +1221,20 @@ export async function updateAdminTenantMembershipRole(
   );
 }
 
+export async function updateAdminTenantMembershipAlias(
+  tenantId: string,
+  membershipId: string,
+  alias: string,
+): Promise<TenantMembership> {
+  return requestJson<TenantMembership>(
+    `/api/admin/tenants/${encodeURIComponent(tenantId)}/memberships/${encodeURIComponent(membershipId)}/alias`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ alias }),
+    },
+  );
+}
+
 export async function revokeAdminTenantMembership(
   tenantId: string,
   membershipId: string,
@@ -1252,6 +1304,19 @@ export async function updateTenantMembershipRole(
     {
       method: "PATCH",
       body: JSON.stringify({ role }),
+    },
+  );
+}
+
+export async function updateTenantMembershipAlias(
+  membershipId: string,
+  alias: string,
+): Promise<TenantMembership> {
+  return requestJson<TenantMembership>(
+    `/api/tenant/memberships/${encodeURIComponent(membershipId)}/alias`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ alias }),
     },
   );
 }

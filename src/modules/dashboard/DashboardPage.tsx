@@ -1,7 +1,6 @@
 import {
   Bed,
   Bell,
-  BellOff,
   CheckCircle2,
   Clock,
   Copy,
@@ -13,70 +12,66 @@ import {
   UserPlus,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useAuth } from "../../auth/AuthContext";
+import { useI18n } from "../../i18n";
 import {
   BackendRequestError,
   generateTelegramStaffPairingCode,
   getBackendStatus,
   getCheckoutOverview,
+  getDashboardSettings,
   getHousekeepingBoard,
   getHousekeepingStaff,
   getParkingDetections,
-  getPushStatus,
-  getScheduledPushTest,
   manualHousekeepingCheckout,
   performHousekeepingAction,
   schedulePushTest,
   sendPushTest,
-  updatePushPreferences,
-} from "../../services/backendApi";
-import type {
-  BackendStatus,
-  HousekeepingBoard,
-  HousekeepingRoomItem,
-  HousekeepingStaffMember,
-  PushPreference,
-  PushStatus,
-  ScheduledPushTestStatus,
+  type BackendStatus,
+  type DashboardSettings,
+  type DashboardWidgetSettings,
+  type HousekeepingBoard,
+  type HousekeepingRoomItem,
+  type HousekeepingStaffMember,
 } from "../../services/backendApi";
 import {
-  activatePushDevice,
-  appIsStandalone,
-  browserSupportsWebPush,
-  deactivatePushDevice,
   getCurrentBrowserSubscription,
-  shouldShowIosInstallHint,
   updateAppBadge,
 } from "../../services/pushClient";
 import type { CheckoutOverview } from "../../types/checkout";
-import type { ModuleId, TenantRole } from "../../types/modules";
 import type { Detection } from "../../types/detection";
+import type { ModuleId, TenantRole } from "../../types/modules";
 
 type HousekeepingAction = "claim" | "bed_done" | "cleaning_done" | "complete" | "assign";
-type PermissionState = NotificationPermission | "unsupported";
-type PushDisplayStatus = "unknown" | "pending" | "success" | "error";
+type RoomFilter = "all" | "unassigned" | "mine" | "inProgress" | "done";
 
-type PushDiagnostic = {
-  received: boolean;
-  displayStatus: PushDisplayStatus;
-  error: string;
-  receivedAt: string;
-  displayedAt: string;
+const DEFAULT_WIDGETS: Record<TenantRole | "platform_admin", DashboardWidgetSettings> = {
+  staff: {
+    housekeeping: true, checkouts: true, reservations: false, parking: false,
+    recentActivity: false, notifications: true, telegram: false, diagnostics: false,
+  },
+  manager: {
+    housekeeping: true, checkouts: true, reservations: true, parking: true,
+    recentActivity: true, notifications: true, telegram: false, diagnostics: false,
+  },
+  tenant_admin: {
+    housekeeping: true, checkouts: true, reservations: true, parking: true,
+    recentActivity: true, notifications: true, telegram: true, diagnostics: false,
+  },
+  platform_admin: {
+    housekeeping: true, checkouts: true, reservations: true, parking: true,
+    recentActivity: true, notifications: true, telegram: true, diagnostics: true,
+  },
 };
 
 function isToday(value?: string | null): boolean {
-  if (!value) {
-    return false;
-  }
-
+  if (!value) return false;
   const date = new Date(value);
   const today = new Date();
-  return (
-    date.getFullYear() === today.getFullYear() &&
+  return date.getFullYear() === today.getFullYear() &&
     date.getMonth() === today.getMonth() &&
-    date.getDate() === today.getDate()
-  );
+    date.getDate() === today.getDate();
 }
 
 function roleCanUseHousekeeping(role?: TenantRole | "platform_admin"): boolean {
@@ -87,115 +82,98 @@ function roleCanManageHousekeeping(role?: TenantRole | "platform_admin"): boolea
   return ["platform_admin", "tenant_admin", "manager"].includes(role || "");
 }
 
-function roomProgressLabel(room: HousekeepingRoomItem) {
-  const bed = room.housekeeping.bedDoneAt ? "🛏✅" : "🛏☐";
-  const cleaning = room.housekeeping.cleaningDoneAt ? "🧹✅" : "🧹☐";
-  return `${bed} · ${cleaning}`;
-}
-
 function roomAssignee(room: HousekeepingRoomItem) {
-  return room.housekeeping.assignedTo?.displayName || "Sin asignar";
-}
-
-function permissionState(): PermissionState {
-  return "Notification" in window ? Notification.permission : "unsupported";
-}
-
-function stringValue(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function numberValue(value: unknown): number | undefined {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : undefined;
-}
-
-function pushFailureMessage(error: unknown): string {
-  if (error instanceof BackendRequestError) {
-    const providerReason = stringValue(error.payload?.providerReason);
-    const payloadError = stringValue(error.payload?.error);
-    const httpStatus = numberValue(error.payload?.httpStatus) || error.status;
-    const message = providerReason || payloadError || error.message;
-
-    return httpStatus ? `${message} (HTTP ${httpStatus})` : message;
-  }
-
-  return error instanceof Error ? error.message : "No se pudo enviar la prueba.";
-}
-
-function scheduledPushFailureMessage(status: ScheduledPushTestStatus): string {
-  const message = status.providerReason || status.error || "No se pudo enviar la notificacion.";
-  return status.httpStatus ? `${message} (HTTP ${status.httpStatus})` : message;
-}
-
-function pushDiagnosticStatusLabel(status: PushDisplayStatus): string {
-  if (status === "success") {
-    return "success";
-  }
-  if (status === "error") {
-    return "error";
-  }
-  if (status === "pending") {
-    return "pendiente";
-  }
-
-  return "sin datos";
-}
-
-function currentTimeLabel(): string {
-  return new Date().toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+  return room.housekeeping.assignedTo?.displayName || "";
 }
 
 function selectedRoomFromBoard(board: HousekeepingBoard, current?: HousekeepingRoomItem) {
-  const queryRoom = new URLSearchParams(window.location.search).get("housekeepingRoom");
-  const needle = queryRoom || current?.roomNumber || current?.roomId || "";
-
-  if (!needle) {
-    return undefined;
-  }
-
-  return [...board.items, ...board.done].find(
-    (item) => item.roomNumber === needle || item.roomId === needle || item.eventId === current?.eventId,
-  );
+  if (!current) return undefined;
+  return [...board.items, ...board.done].find((item) => item.eventId === current.eventId);
 }
 
-export function DashboardPage({ enabledModules }: { enabledModules: Record<ModuleId, boolean> }) {
+function actionError(error: unknown) {
+  if (error instanceof BackendRequestError) {
+    return error.message;
+  }
+  return error instanceof Error ? error.message : "Could not update.";
+}
+
+function optimisticBoard(
+  board: HousekeepingBoard | undefined,
+  eventId: string,
+  action: HousekeepingAction,
+  userId?: string,
+  assignedTo?: HousekeepingStaffMember,
+): HousekeepingBoard | undefined {
+  if (!board) return board;
+  const timestamp = new Date().toISOString();
+  const mapRoom = (room: HousekeepingRoomItem): HousekeepingRoomItem => {
+    if (room.eventId !== eventId) return room;
+    const housekeeping = { ...room.housekeeping };
+    if (action === "claim") {
+      housekeeping.assignedTo = assignedTo ? {
+        userId: assignedTo.userId,
+        displayName: assignedTo.displayName,
+        telegramUsername: assignedTo.telegramUsername,
+        role: assignedTo.role,
+      } : housekeeping.assignedTo;
+      housekeeping.assignedAt = timestamp;
+    }
+    if (action === "assign" && assignedTo) {
+      housekeeping.assignedTo = {
+        userId: assignedTo.userId,
+        displayName: assignedTo.displayName,
+        telegramUsername: assignedTo.telegramUsername,
+        role: assignedTo.role,
+      };
+      housekeeping.assignedAt = timestamp;
+    }
+    if (action === "bed_done" || action === "complete") housekeeping.bedDoneAt ||= timestamp;
+    if (action === "cleaning_done" || action === "complete") housekeeping.cleaningDoneAt ||= timestamp;
+    if (action === "complete") housekeeping.completedAt ||= timestamp;
+    return { ...room, status: action === "claim" ? "cleaning" : room.status, housekeeping };
+  };
+  const items = board.items.map(mapRoom);
+  const done = board.done.map(mapRoom);
+  if (action === "complete") {
+    const completed = items.find((room) => room.eventId === eventId);
+    return {
+      ...board,
+      items: items.filter((room) => room.eventId !== eventId),
+      done: completed ? [{ ...completed, status: "ready", cleanedTimestamp: timestamp }, ...done] : done,
+    };
+  }
+  return { ...board, items, done };
+}
+
+export function DashboardPage({
+  enabledModules,
+  focusHousekeeping = false,
+}: {
+  enabledModules: Record<ModuleId, boolean>;
+  focusHousekeeping?: boolean;
+}) {
   const { user, session, activeTenantId } = useAuth();
+  const { t } = useI18n();
   const [status, setStatus] = useState<BackendStatus>();
   const [checkout, setCheckout] = useState<CheckoutOverview>();
   const [detections, setDetections] = useState<Detection[]>([]);
-  const [telegramPairing, setTelegramPairing] = useState<
-    Awaited<ReturnType<typeof generateTelegramStaffPairingCode>> | undefined
-  >();
-  const [telegramBusy, setTelegramBusy] = useState(false);
-  const [telegramNotice, setTelegramNotice] = useState("");
-  const [pushStatus, setPushStatus] = useState<PushStatus>();
-  const [pushPermission, setPushPermission] = useState<PermissionState>(permissionState);
-  const [currentSubscription, setCurrentSubscription] = useState<PushSubscription | null>(null);
-  const [pushBusy, setPushBusy] = useState("");
-  const [pushNotice, setPushNotice] = useState("");
-  const [scheduledPushTestId, setScheduledPushTestId] = useState("");
-  const [testDelay, setTestDelay] = useState(20);
-  const [pushDiagnostic, setPushDiagnostic] = useState<PushDiagnostic>({
-    received: false,
-    displayStatus: "unknown",
-    error: "",
-    receivedAt: "",
-    displayedAt: "",
-  });
   const [board, setBoard] = useState<HousekeepingBoard>();
   const [staff, setStaff] = useState<HousekeepingStaffMember[]>([]);
-  const [selectedRoom, setSelectedRoom] = useState<HousekeepingRoomItem>();
-  const [housekeepingBusy, setHousekeepingBusy] = useState("");
-  const [housekeepingNotice, setHousekeepingNotice] = useState("");
-  const [assignmentTargetUserId, setAssignmentTargetUserId] = useState("");
+  const [widgets, setWidgets] = useState<DashboardSettings>();
+  const [filter, setFilter] = useState<RoomFilter>(focusHousekeeping ? "all" : "all");
+  const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState("");
+  const [detailRoom, setDetailRoom] = useState<HousekeepingRoomItem>();
+  const [assignmentRoom, setAssignmentRoom] = useState<HousekeepingRoomItem>();
   const [manualOpen, setManualOpen] = useState(false);
   const [manualRoomId, setManualRoomId] = useState("");
   const [manualAssigneeUserId, setManualAssigneeUserId] = useState("");
+  const [telegramPairing, setTelegramPairing] = useState<
+    Awaited<ReturnType<typeof generateTelegramStaffPairingCode>> | undefined
+  >();
+  const [currentEndpoint, setCurrentEndpoint] = useState("");
+  const [testDelay, setTestDelay] = useState(20);
 
   const activeTenantRole = useMemo(
     () =>
@@ -203,299 +181,115 @@ export function DashboardPage({ enabledModules }: { enabledModules: Record<Modul
       (session?.isPlatformAdmin && activeTenantId ? "platform_admin" : undefined),
     [activeTenantId, session?.isPlatformAdmin, session?.memberships],
   );
-  const canUseHousekeeping =
-    enabledModules.checkout && roleCanUseHousekeeping(activeTenantRole);
+  const roleKey = (activeTenantRole || "staff") as TenantRole | "platform_admin";
+  const canUseHousekeeping = enabledModules.checkout && roleCanUseHousekeeping(activeTenantRole);
   const canManageHousekeeping = roleCanManageHousekeeping(activeTenantRole);
-
-  const refreshPush = useCallback(async () => {
-    setPushPermission(permissionState());
-
-    if (!browserSupportsWebPush()) {
-      setCurrentSubscription(null);
-      return;
-    }
-
-    const [nextStatus, subscription] = await Promise.all([
-      getPushStatus(),
-      getCurrentBrowserSubscription(),
-    ]);
-    setPushStatus(nextStatus);
-    setCurrentSubscription(subscription);
-  }, []);
-
-  const refreshHousekeeping = useCallback(async () => {
-    if (!canUseHousekeeping) {
-      return;
-    }
-
-    const [nextBoard, nextStaff] = await Promise.all([
-      getHousekeepingBoard(),
-      getHousekeepingStaff(),
-    ]);
-    setBoard(nextBoard);
-    setStaff(nextStaff.members);
-    setSelectedRoom((current) => selectedRoomFromBoard(nextBoard, current));
-    await updateAppBadge(nextBoard.summary.total);
-  }, [canUseHousekeeping]);
-
-  useEffect(() => {
-    void getBackendStatus().then(setStatus).catch(() => undefined);
-    if (enabledModules.parking) {
-      void getParkingDetections().then(setDetections).catch(() => undefined);
-    }
-    if (enabledModules.checkout) {
-      void getCheckoutOverview().then(setCheckout).catch(() => undefined);
-    }
-  }, [enabledModules.checkout, enabledModules.parking]);
-
-  useEffect(() => {
-    void refreshPush().catch(() => undefined);
-  }, [refreshPush]);
-
-  useEffect(() => {
-    void refreshHousekeeping().catch(() => undefined);
-    if (!canUseHousekeeping) {
-      return undefined;
-    }
-
-    const interval = window.setInterval(() => {
-      void refreshHousekeeping().catch(() => undefined);
-    }, 10_000);
-    const handleVisibility = () => {
-      if (document.visibilityState === "visible") {
-        void refreshHousekeeping().catch(() => undefined);
-      }
-    };
-    window.addEventListener("focus", handleVisibility);
-    document.addEventListener("visibilitychange", handleVisibility);
-
-    return () => {
-      window.clearInterval(interval);
-      window.removeEventListener("focus", handleVisibility);
-      document.removeEventListener("visibilitychange", handleVisibility);
-    };
-  }, [canUseHousekeeping, refreshHousekeeping]);
-
-  useEffect(() => {
-    if (!("serviceWorker" in navigator)) {
-      return undefined;
-    }
-
-    const handler = (event: MessageEvent) => {
-      const message = event.data;
-
-      if (message?.type === "HOTELAPP_PUSH_RECEIVED") {
-        setPushDiagnostic({
-          received: true,
-          displayStatus: "pending",
-          error: "",
-          receivedAt: currentTimeLabel(),
-          displayedAt: "",
-        });
-        setPushNotice(message.payload?.body || "Nueva notificacion recibida.");
-        void refreshHousekeeping().catch(() => undefined);
-      } else if (message?.type === "HOTELAPP_NOTIFICATION_DISPLAYED") {
-        setPushDiagnostic((current) => ({
-          ...current,
-          received: true,
-          displayStatus: "success",
-          error: "",
-          displayedAt: currentTimeLabel(),
-        }));
-      } else if (message?.type === "HOTELAPP_NOTIFICATION_DISPLAY_ERROR") {
-        setPushDiagnostic((current) => ({
-          ...current,
-          received: true,
-          displayStatus: "error",
-          error: typeof message.error === "string" ? message.error : "Error desconocido",
-          displayedAt: currentTimeLabel(),
-        }));
-      }
-    };
-
-    navigator.serviceWorker.addEventListener("message", handler);
-    return () => navigator.serviceWorker.removeEventListener("message", handler);
-  }, [refreshHousekeeping]);
-
-  useEffect(() => {
-    if (!scheduledPushTestId) {
-      return undefined;
-    }
-
-    let cancelled = false;
-    async function refreshScheduledPushTest() {
-      try {
-        const status = await getScheduledPushTest(scheduledPushTestId);
-        if (cancelled) {
-          return;
-        }
-
-        if (status.status === "sent") {
-          setPushNotice("✅ Notificación enviada");
-          setScheduledPushTestId("");
-        } else if (status.status === "failed") {
-          setPushNotice(`❌ Error: ${scheduledPushFailureMessage(status)}`);
-          setScheduledPushTestId("");
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setPushNotice(`❌ Error: ${pushFailureMessage(error)}`);
-          setScheduledPushTestId("");
-        }
-      }
-    }
-
-    void refreshScheduledPushTest();
-    const interval = window.setInterval(() => {
-      void refreshScheduledPushTest();
-    }, 2_000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [scheduledPushTestId]);
-
-  const checkoutsToday = checkout?.events.filter((event) => isToday(event.timestamp)).length ?? 0;
-  const waitingRooms =
-    checkout?.rooms.filter((room) => room.status === "ready_for_cleaning").length ?? 0;
-  const detectionsToday = detections.filter((detection) => isToday(detection.detectedAt)).length;
-  const telegramCommand = telegramPairing ? `/staff ${telegramPairing.code}` : "";
-  const currentEndpoint = currentSubscription?.endpoint || "";
-  const pushActive = Boolean(
-    currentEndpoint &&
-      pushStatus?.subscriptions.some(
-        (subscription) => subscription.endpoint === currentEndpoint && !subscription.disabledAt,
-      ),
-  );
+  const visibleWidgets = widgets?.widgets?.[roleKey] || DEFAULT_WIDGETS[roleKey];
+  const currentStaff = staff.find((member) => member.userId === user?.id);
   const assignableStaff = staff.filter((member) =>
     ["platform_admin", "tenant_admin", "manager", "staff"].includes(member.role),
   );
 
-  async function linkTelegram() {
-    setTelegramBusy(true);
-    setTelegramNotice("");
-    try {
-      setTelegramPairing(await generateTelegramStaffPairingCode());
-    } catch (error) {
-      setTelegramNotice(error instanceof Error ? error.message : "No se pudo generar el codigo.");
-    } finally {
-      setTelegramBusy(false);
-    }
-  }
+  const refreshHousekeeping = useCallback(async () => {
+    if (!canUseHousekeeping) return;
+    const [nextBoard, nextStaff] = await Promise.all([getHousekeepingBoard(), getHousekeepingStaff()]);
+    setBoard(nextBoard);
+    setStaff(nextStaff.members);
+    setDetailRoom((current) => selectedRoomFromBoard(nextBoard, current));
+    setAssignmentRoom((current) => selectedRoomFromBoard(nextBoard, current));
+    await updateAppBadge(nextBoard.summary.total);
+  }, [canUseHousekeeping]);
 
-  async function copyTelegramCommand() {
-    try {
-      await navigator.clipboard.writeText(telegramCommand);
-      setTelegramNotice("Comando copiado.");
-    } catch {
-      setTelegramNotice("No se pudo copiar. Manten pulsado el comando para copiarlo.");
-    }
-  }
+  useEffect(() => {
+    void getDashboardSettings().then(setWidgets).catch(() => undefined);
+    void getBackendStatus().then(setStatus).catch(() => undefined);
+    if (enabledModules.parking) void getParkingDetections().then(setDetections).catch(() => undefined);
+    if (enabledModules.checkout) void getCheckoutOverview().then(setCheckout).catch(() => undefined);
+    void getCurrentBrowserSubscription().then((subscription) => setCurrentEndpoint(subscription?.endpoint || "")).catch(() => undefined);
+  }, [enabledModules.checkout, enabledModules.parking]);
 
-  async function activateNotifications() {
-    setPushBusy("activate");
-    setPushNotice("");
-    try {
-      await activatePushDevice();
-      setPushPermission(permissionState());
-      await refreshPush();
-      setPushNotice("Notificaciones activadas en este dispositivo.");
-    } catch (error) {
-      setPushNotice(error instanceof Error ? error.message : "No se pudieron activar.");
-    } finally {
-      setPushBusy("");
-    }
-  }
+  useEffect(() => {
+    void refreshHousekeeping().catch(() => undefined);
+    if (!canUseHousekeeping) return undefined;
+    const interval = window.setInterval(() => void refreshHousekeeping().catch(() => undefined), 10_000);
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") void refreshHousekeeping().catch(() => undefined);
+    };
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [canUseHousekeeping, refreshHousekeeping]);
 
-  async function deactivateNotifications() {
-    setPushBusy("deactivate");
-    setPushNotice("");
-    try {
-      await deactivatePushDevice();
-      await refreshPush();
-      setPushNotice("Notificaciones desactivadas en este dispositivo.");
-    } catch (error) {
-      setPushNotice(error instanceof Error ? error.message : "No se pudieron desactivar.");
-    } finally {
-      setPushBusy("");
-    }
-  }
+  const checkoutsToday = checkout?.events.filter((event) => isToday(event.timestamp)).length ?? 0;
+  const waitingRooms = checkout?.rooms.filter((room) => room.status === "ready_for_cleaning").length ?? 0;
+  const detectionsToday = detections.filter((detection) => isToday(detection.detectedAt)).length;
+  const progressTotal = (board?.items.length || 0) + (board?.done.length || 0);
+  const progressDone = board?.done.length || 0;
+  const progressPercent = progressTotal ? Math.round((progressDone / progressTotal) * 100) : 100;
+  const averageCleaningMinutes = useMemo(() => {
+    const durations = (board?.done || [])
+      .map((room) => {
+        const completed = new Date(room.housekeeping.completedAt || room.cleanedTimestamp || "").getTime();
+        const checkoutAt = new Date(room.checkoutTimestamp || "").getTime();
+        return Number.isFinite(completed) && Number.isFinite(checkoutAt) ? (completed - checkoutAt) / 60_000 : 0;
+      })
+      .filter((minutes) => minutes > 0 && minutes < 24 * 60);
+    return durations.length ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length) : 0;
+  }, [board?.done]);
 
-  async function patchPreference(patch: Partial<PushPreference>) {
-    const preference = await updatePushPreferences(patch);
-    setPushStatus((current) => current && { ...current, preference });
-  }
+  const roomsForList = useMemo(() => {
+    const rooms = [...(board?.items || []), ...(filter === "done" || filter === "all" ? board?.done || [] : [])];
+    return rooms.filter((room) => {
+      if (filter === "unassigned") return !room.housekeeping.assignedTo;
+      if (filter === "mine") return room.housekeeping.assignedTo?.userId === user?.id;
+      if (filter === "inProgress") return room.status === "cleaning";
+      if (filter === "done") return Boolean(room.housekeeping.completedAt || room.cleanedTimestamp);
+      return true;
+    });
+  }, [board?.done, board?.items, filter, user?.id]);
 
-  async function sendTestNow() {
-    if (!currentEndpoint) {
-      setPushNotice("Activa este dispositivo primero.");
-      return;
-    }
-
-    setPushBusy("test");
-    setPushNotice("");
-    try {
-      await sendPushTest(currentEndpoint);
-      setPushNotice("Prueba enviada.");
-    } catch (error) {
-      setPushNotice(`❌ Error: ${pushFailureMessage(error)}`);
-    } finally {
-      setPushBusy("");
-    }
-  }
-
-  async function scheduleTest() {
-    if (!currentEndpoint) {
-      setPushNotice("Activa este dispositivo primero.");
-      return;
-    }
-
-    setPushBusy("schedule");
-    setPushNotice("");
-    try {
-      const result = await schedulePushTest(currentEndpoint, testDelay);
-      setScheduledPushTestId(result.scheduled.id);
-      setPushNotice(`Programada para dentro de ${result.delaySeconds} s`);
-    } catch (error) {
-      setPushNotice(`❌ Error: ${pushFailureMessage(error)}`);
-    } finally {
-      setPushBusy("");
-    }
-  }
-
-  async function runHousekeepingAction(action: HousekeepingAction) {
-    if (!selectedRoom) {
-      return;
-    }
-
-    setHousekeepingBusy(action);
-    setHousekeepingNotice("");
+  async function runRoomAction(room: HousekeepingRoomItem, action: HousekeepingAction, targetUserId?: string) {
+    const previous = board;
+    const target = targetUserId ? staff.find((member) => member.userId === targetUserId) : currentStaff;
+    setBoard((current) => optimisticBoard(current, room.eventId, action, user?.id, target));
+    setBusy(`${action}-${room.eventId}`);
+    setNotice("");
     try {
       const result = await performHousekeepingAction({
         action,
-        eventId: selectedRoom.eventId,
-        assignmentTargetUserId: action === "assign" ? assignmentTargetUserId : undefined,
+        eventId: room.eventId,
+        assignmentTargetUserId: action === "assign" ? targetUserId : undefined,
       });
       setBoard(result.board);
-      setSelectedRoom(selectedRoomFromBoard(result.board, selectedRoom));
-      setHousekeepingNotice("Actualizado.");
+      setDetailRoom((current) => selectedRoomFromBoard(result.board, current));
+      setAssignmentRoom(undefined);
       await updateAppBadge(result.board.summary.total);
     } catch (error) {
-      setHousekeepingNotice(error instanceof Error ? error.message : "No se pudo actualizar.");
+      setBoard(previous);
+      setNotice(actionError(error));
     } finally {
-      setHousekeepingBusy("");
+      setBusy("");
     }
   }
 
-  async function createManualCheckout() {
-    if (!manualRoomId) {
-      setHousekeepingNotice("Selecciona una habitacion.");
+  async function handleAssignee(room: HousekeepingRoomItem) {
+    if (!canManageHousekeeping) {
+      if (!room.housekeeping.assignedTo) {
+        await runRoomAction(room, "claim");
+      }
       return;
     }
+    setAssignmentRoom(room);
+  }
 
-    setHousekeepingBusy("manual");
-    setHousekeepingNotice("");
+  async function createManualCheckout() {
+    if (!manualRoomId) return;
+    setBusy("manual");
+    setNotice("");
     try {
       await manualHousekeepingCheckout({
         roomId: manualRoomId,
@@ -505,439 +299,314 @@ export function DashboardPage({ enabledModules }: { enabledModules: Record<Modul
       setManualRoomId("");
       setManualAssigneeUserId("");
       await refreshHousekeeping();
-      setHousekeepingNotice("Checkout manual registrado.");
     } catch (error) {
-      setHousekeepingNotice(error instanceof Error ? error.message : "No se pudo registrar.");
+      setNotice(actionError(error));
     } finally {
-      setHousekeepingBusy("");
+      setBusy("");
+    }
+  }
+
+  async function createTelegramCode() {
+    setBusy("telegram");
+    setNotice("");
+    try {
+      setTelegramPairing(await generateTelegramStaffPairingCode());
+    } catch (error) {
+      setNotice(actionError(error));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function sendPushDiagnostic(scheduled: boolean) {
+    if (!currentEndpoint) {
+      setNotice("Activate this device first.");
+      return;
+    }
+    setBusy(scheduled ? "push-schedule" : "push-test");
+    try {
+      if (scheduled) {
+        await schedulePushTest(currentEndpoint, testDelay);
+      } else {
+        await sendPushTest(currentEndpoint);
+      }
+      setNotice(t("saved"));
+    } catch (error) {
+      setNotice(actionError(error));
+    } finally {
+      setBusy("");
     }
   }
 
   return (
-    <section className="module-page">
-      <div className="module-title">
+    <section className={`module-page dashboard-workspace ${focusHousekeeping ? "focus-housekeeping" : ""}`}>
+      {notice && <div className="notice error">{notice}</div>}
+
+      <div className="module-title compact-title">
         <div>
-          <h1>Dashboard</h1>
-          <p>Current operational signal from enabled modules.</p>
+          <h1>{focusHousekeeping ? t("housekeeping") : t("today")}</h1>
+          <p>{board?.tenant.name || status?.reservationSource || ""}</p>
         </div>
-      </div>
-      <div className="platform-stats">
-        {enabledModules.checkout && (
-          <>
-            <article className="stat-item">
-              <span>Rooms waiting for cleaning</span>
-              <strong>{waitingRooms}</strong>
-            </article>
-            <article className="stat-item">
-              <span>Checkouts today</span>
-              <strong>{checkoutsToday}</strong>
-            </article>
-          </>
-        )}
-        {enabledModules.parking && (
-          <article className="stat-item">
-            <span>Parking detections today</span>
-            <strong>{detectionsToday}</strong>
-          </article>
-        )}
-        <article className="stat-item">
-          <span>Current reservations</span>
-          <strong>{status?.reservationsLoaded ?? 0}</strong>
-        </article>
+        <button type="button" className="icon-button" onClick={() => void refreshHousekeeping()} aria-label={t("refresh")}>
+          <RefreshCw size={17} />
+        </button>
       </div>
 
-      {canUseHousekeeping && (
-        <section className="panel notification-card">
-          <div className="section-heading">
-            <h2>
-              <Bell size={18} /> Notificaciones
-            </h2>
-            <button
-              type="button"
-              className="icon-button small"
-              onClick={() => void refreshPush()}
-              title="Actualizar"
-              aria-label="Actualizar notificaciones"
-            >
-              <RefreshCw size={16} />
-            </button>
-          </div>
-          <div className="notification-body">
-            {!browserSupportsWebPush() && shouldShowIosInstallHint() ? (
-              <div className="notification-state">
-                <BellOff size={18} />
-                <strong>Instala HotelApp en la pantalla de inicio para activar notificaciones.</strong>
-                <span>En Safari: compartir, Anadir a pantalla de inicio, abrir HotelApp instalada.</span>
-              </div>
-            ) : !browserSupportsWebPush() ? (
-              <div className="notification-state">
-                <BellOff size={18} />
-                <strong>Este dispositivo/navegador no soporta Web Push.</strong>
-              </div>
-            ) : pushPermission === "denied" ? (
-              <div className="notification-state">
-                <BellOff size={18} />
-                <strong>Permiso bloqueado para este dispositivo.</strong>
-                <span>Activalo desde los ajustes del navegador o del sistema.</span>
-              </div>
-            ) : !pushActive ? (
-              <div className="notification-state">
-                <Bell size={18} />
-                <strong>
-                  {pushPermission === "default"
-                    ? "Permiso no solicitado"
-                    : appIsStandalone()
-                      ? "Listo para activar en este dispositivo"
-                      : "Instalable como PWA"}
-                </strong>
-                <button
-                  type="button"
-                  className="primary-button"
-                  onClick={() => void activateNotifications()}
-                  disabled={Boolean(pushBusy)}
-                >
-                  <Bell size={16} /> {pushBusy === "activate" ? "Activando..." : "Activar notificaciones"}
-                </button>
-              </div>
-            ) : (
-              <div className="notification-state active">
-                <CheckCircle2 size={18} />
-                <strong>Notificaciones activadas en este dispositivo</strong>
-                <span>{pushStatus?.subscriptionCount ?? 1} dispositivo(s) registrado(s)</span>
-                <button
-                  type="button"
-                  onClick={() => void deactivateNotifications()}
-                  disabled={Boolean(pushBusy)}
-                >
-                  <BellOff size={16} /> Desactivar en este dispositivo
-                </button>
-              </div>
-            )}
+      <div className="platform-stats operational-grid">
+        {enabledModules.checkout && visibleWidgets.housekeeping && (
+          <button type="button" className="stat-item compact-kpi" onClick={() => setFilter("all")}>
+            <Sparkles size={18} /><strong>{waitingRooms}</strong><span>{t("roomsToClean")}</span>
+          </button>
+        )}
+        {enabledModules.checkout && visibleWidgets.checkouts && (
+          <button type="button" className="stat-item compact-kpi" onClick={() => setManualOpen(canManageHousekeeping)}>
+            <Clock size={18} /><strong>{checkoutsToday}</strong><span>{t("checkoutsToday")}</span>
+          </button>
+        )}
+        {enabledModules.parking && visibleWidgets.parking && (
+          <button type="button" className="stat-item compact-kpi">
+            <span aria-hidden="true">P</span><strong>{detectionsToday}</strong><span>{t("parkingToday")}</span>
+          </button>
+        )}
+        {visibleWidgets.reservations && (
+          <button type="button" className="stat-item compact-kpi">
+            <span aria-hidden="true">R</span><strong>{status?.reservationsLoaded ?? 0}</strong><span>{t("currentReservations")}</span>
+          </button>
+        )}
+      </div>
 
-            {pushActive && pushStatus?.preference && (
-              <div className="push-preferences">
-                <label className="checkbox-row">
-                  <input
-                    type="checkbox"
-                    checked={pushStatus.preference.enabled}
-                    onChange={(event) => void patchPreference({ enabled: event.target.checked })}
-                  />
-                  <span>Activas</span>
-                </label>
-                <label className="checkbox-row">
-                  <input
-                    type="checkbox"
-                    checked={pushStatus.preference.newCheckout}
-                    onChange={(event) => void patchPreference({ newCheckout: event.target.checked })}
-                  />
-                  <span>Nuevos checkouts</span>
-                </label>
-                <label className="checkbox-row">
-                  <input
-                    type="checkbox"
-                    checked={pushStatus.preference.assignedToMe}
-                    onChange={(event) => void patchPreference({ assignedToMe: event.target.checked })}
-                  />
-                  <span>Asignadas a mi</span>
-                </label>
-                <label className="checkbox-row">
-                  <input
-                    type="checkbox"
-                    checked={pushStatus.preference.roomCompleted}
-                    onChange={(event) => void patchPreference({ roomCompleted: event.target.checked })}
-                  />
-                  <span>Habitacion terminada</span>
-                </label>
-              </div>
-            )}
-
-            {pushActive && (
-              <div className="push-test-grid">
-                <button type="button" onClick={() => void sendTestNow()} disabled={Boolean(pushBusy)}>
-                  <Send size={16} /> Enviar prueba ahora
-                </button>
-                <label>
-                  <span>Enviar dentro de</span>
-                  <input
-                    type="number"
-                    min={5}
-                    max={600}
-                    value={testDelay}
-                    onChange={(event) => setTestDelay(Number(event.target.value))}
-                  />
-                  <span>s</span>
-                </label>
-                <button type="button" onClick={() => void scheduleTest()} disabled={Boolean(pushBusy)}>
-                  <Clock size={16} /> Programar notificacion
-                </button>
-              </div>
-            )}
-            <div className="push-diagnostic" aria-live="polite">
-              <strong>Ultimo push</strong>
-              <div>
-                <span>Recibido por service worker</span>
-                <b>{pushDiagnostic.received ? "si" : "no"}</b>
-              </div>
-              <div>
-                <span>showNotification</span>
-                <b className={`push-diagnostic-status ${pushDiagnostic.displayStatus}`}>
-                  {pushDiagnosticStatusLabel(pushDiagnostic.displayStatus)}
-                </b>
-              </div>
-              {pushDiagnostic.receivedAt && (
-                <div>
-                  <span>Recibido a las</span>
-                  <b>{pushDiagnostic.receivedAt}</b>
-                </div>
-              )}
-              {pushDiagnostic.displayedAt && (
-                <div>
-                  <span>Actualizado a las</span>
-                  <b>{pushDiagnostic.displayedAt}</b>
-                </div>
-              )}
-              {pushDiagnostic.error && (
-                <div className="push-diagnostic-error">
-                  <span>Error</span>
-                  <code>{pushDiagnostic.error}</code>
-                </div>
-              )}
+      {canUseHousekeeping && visibleWidgets.housekeeping && (
+        <section className="panel housekeeping-panel mobile-primary-panel">
+          <div className="section-heading housekeeping-heading">
+            <div>
+              <h2>{t("housekeeping")}</h2>
+              <span>
+                {board?.summary.waiting || 0} {t("pending")} - {board?.summary.cleaning || 0} {t("inProgress")} - {board?.summary.done || 0} {t("done")}
+              </span>
             </div>
-            {pushNotice && <p className="telegram-link-notice" role="status">{pushNotice}</p>}
-          </div>
-        </section>
-      )}
-
-      {canUseHousekeeping && (
-        <section className="panel housekeeping-panel">
-          <div className="section-heading">
-            <h2>🧹 Housekeeping today</h2>
             <div className="button-row">
               {canManageHousekeeping && (
-                <button type="button" onClick={() => setManualOpen(true)}>
-                  <Plus size={15} /> Checkout manual
+                <button type="button" className="icon-button small" onClick={() => setManualOpen(true)} aria-label={t("manualCheckout")}>
+                  <Plus size={16} />
                 </button>
               )}
-              <button type="button" onClick={() => void refreshHousekeeping()}>
-                <RefreshCw size={15} /> Actualizar
-              </button>
             </div>
           </div>
-          <div className="housekeeping-list">
-            {(board?.items || []).map((room) => (
-              <button
-                type="button"
-                key={room.eventId}
-                className="housekeeping-row"
-                onClick={() => {
-                  setSelectedRoom(room);
-                  setAssignmentTargetUserId(room.housekeeping.assignedTo?.userId || "");
-                }}
-              >
-                <strong>{room.roomNumber}</strong>
-                <span>👤 {roomAssignee(room)}</span>
-                <span>{roomProgressLabel(room)}</span>
+          <div className="housekeeping-progress" aria-label={`${progressPercent}%`}>
+            <span style={{ width: `${progressPercent}%` }} />
+          </div>
+          {canManageHousekeeping && averageCleaningMinutes > 0 && (
+            <div className="metric-strip">{t("averageCleaningToday")}: <strong>{averageCleaningMinutes} min</strong></div>
+          )}
+          <div className="chip-scroll">
+            {([
+              ["all", t("all")],
+              ["unassigned", t("unassigned")],
+              ["mine", t("mine")],
+              ["inProgress", t("inProgress")],
+              ["done", t("done")],
+            ] as Array<[RoomFilter, string]>).map(([id, label]) => (
+              <button key={id} type="button" className={filter === id ? "active" : ""} onClick={() => setFilter(id)}>
+                {label}
               </button>
             ))}
-            {(!board?.items || board.items.length === 0) && (
-              <p className="empty-state">No hay habitaciones pendientes.</p>
-            )}
           </div>
-          {housekeepingNotice && (
-            <p className="telegram-link-notice housekeeping-notice" role="status">
-              {housekeepingNotice}
-            </p>
-          )}
+          <div className="housekeeping-dense-list">
+            {roomsForList.map((room) => (
+              <article key={room.eventId} className={`hk-room-row ${room.housekeeping.completedAt ? "completed" : ""}`}>
+                <button type="button" className="hk-room-main" onClick={() => setDetailRoom(room)}>
+                  <strong>{room.roomNumber}</strong>
+                  <span>{room.accessCode ? `${t("accessCode")} ${room.accessCode}` : room.roomName || t("details")}</span>
+                </button>
+                <button type="button" className="hk-assignee" onClick={() => void handleAssignee(room)}>
+                  {room.housekeeping.assignedTo ? roomAssignee(room) : t("notAssigned")}
+                </button>
+                <div className="hk-inline-actions">
+                  <button
+                    type="button"
+                    className={room.housekeeping.bedDoneAt ? "done" : ""}
+                    aria-label={`${t("bed")} ${room.roomNumber}`}
+                    aria-pressed={Boolean(room.housekeeping.bedDoneAt)}
+                    disabled={Boolean(room.housekeeping.bedDoneAt || busy)}
+                    onClick={() => void runRoomAction(room, "bed_done")}
+                  >
+                    <Bed size={16} />{room.housekeeping.bedDoneAt && <CheckCircle2 size={11} />}
+                  </button>
+                  <button
+                    type="button"
+                    className={room.housekeeping.cleaningDoneAt ? "done" : ""}
+                    aria-label={`${t("cleaning")} ${room.roomNumber}`}
+                    aria-pressed={Boolean(room.housekeeping.cleaningDoneAt)}
+                    disabled={Boolean(room.housekeeping.cleaningDoneAt || busy)}
+                    onClick={() => void runRoomAction(room, "cleaning_done")}
+                  >
+                    <Sparkles size={16} />{room.housekeeping.cleaningDoneAt && <CheckCircle2 size={11} />}
+                  </button>
+                  <button
+                    type="button"
+                    className="finish"
+                    aria-label={`${t("finish")} ${room.roomNumber}`}
+                    disabled={Boolean(busy)}
+                    onClick={() => void runRoomAction(room, "complete")}
+                  >
+                    <CheckCircle2 size={17} />
+                  </button>
+                </div>
+              </article>
+            ))}
+            {roomsForList.length === 0 && <p className="empty-state">{t("noRoomsPending")}</p>}
+          </div>
         </section>
       )}
 
-      <section className="panel telegram-link-card">
-        <div className="section-heading">
-          <h2>Telegram</h2>
-        </div>
-        {user?.telegramUserId ? (
-          <div className="telegram-link-status">
-            <strong>✅ Telegram vinculado</strong>
-            {user.telegramUsername && <span>@{user.telegramUsername.replace(/^@/, "")}</span>}
-          </div>
-        ) : (
-          <div className="telegram-link-content">
-            <strong>Telegram no vinculado</strong>
-            <p>Vincula tu usuario de Telegram para utilizar las funciones de housekeeping.</p>
-            {!telegramPairing && (
-              <button type="button" onClick={() => void linkTelegram()} disabled={telegramBusy}>
-                {telegramBusy ? "Generando..." : "Vincular Telegram"}
-              </button>
-            )}
-            {telegramPairing && (
-              <div className="source-preview telegram-command">
-                <code>{telegramCommand}</code>
-                <p>Pega este comando en el bot de Telegram.</p>
-                <div className="meta-list">
-                  <span>Caduca</span>
-                  <strong>{new Date(telegramPairing.expiresAt).toLocaleString()}</strong>
+      {visibleWidgets.recentActivity && (
+        <details className="panel collapsible-panel">
+          <summary>{t("recentActivity")} <span>{checkout?.events.length || 0}</span></summary>
+          <div className="activity-list">
+            {(checkout?.events || []).slice(0, 8).map((event) => {
+              const room = checkout?.rooms.find((item) => item.id === event.roomId);
+              return (
+                <div key={event.id}>
+                  <span>{new Date(event.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                  <strong>{t("room")} {room?.number || "-"}</strong>
+                  <span>{event.source.toUpperCase()}</span>
                 </div>
-                <div className="button-row">
-                  <button type="button" onClick={() => void copyTelegramCommand()}>
-                    <Copy size={15} /> Copiar
+              );
+            })}
+            {(!checkout?.events || checkout.events.length === 0) && <p className="empty-state">No activity.</p>}
+          </div>
+        </details>
+      )}
+
+      {(visibleWidgets.telegram || visibleWidgets.diagnostics) && (
+        <details className="panel collapsible-panel">
+          <summary>{t("secondaryTools")}</summary>
+          <div className="settings-form">
+            {visibleWidgets.telegram && (
+              <div className="tool-block">
+                <h3>Telegram</h3>
+                {user?.telegramUserId ? (
+                  <strong>Connected @{user.telegramUsername?.replace(/^@/, "") || user.telegramUserId}</strong>
+                ) : (
+                  <>
+                    <button type="button" onClick={() => void createTelegramCode()} disabled={busy !== ""}>
+                      <UserPlus size={15} /> Link Telegram
+                    </button>
+                    {telegramPairing && (
+                      <div className="copy-field">
+                        <code>/staff {telegramPairing.code}</code>
+                        <button type="button" onClick={() => void navigator.clipboard.writeText(`/staff ${telegramPairing.code}`)}>
+                          <Copy size={15} />
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+            {visibleWidgets.diagnostics && (
+              <div className="tool-block">
+                <h3>Web Push diagnostics</h3>
+                <div className="push-test-grid compact">
+                  <button type="button" onClick={() => void sendPushDiagnostic(false)} disabled={busy !== ""}>
+                    <Send size={16} /> Send test
+                  </button>
+                  <label>
+                    <span>Delay</span>
+                    <input type="number" min={5} max={600} value={testDelay} onChange={(event) => setTestDelay(Number(event.target.value))} />
+                  </label>
+                  <button type="button" onClick={() => void sendPushDiagnostic(true)} disabled={busy !== ""}>
+                    <Bell size={16} /> Schedule
                   </button>
                 </div>
               </div>
             )}
           </div>
-        )}
-        {telegramNotice && <p className="telegram-link-notice" role="status">{telegramNotice}</p>}
-      </section>
-      <section className="panel">
-        <div className="section-heading">
-          <h2>Recent Activity</h2>
-        </div>
-        <div className="activity-list">
-          {(checkout?.events || []).slice(0, 8).map((event) => {
-            const room = checkout?.rooms.find((item) => item.id === event.roomId);
-            return (
-              <div key={event.id}>
-                <span>{new Date(event.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                <strong>Room {room?.number || "-"}</strong>
-                <span>Checkout via {event.source.toUpperCase()}</span>
-              </div>
-            );
-          })}
-          {(!checkout?.events || checkout.events.length === 0) && (
-            <p className="empty-state">No recent activity.</p>
-          )}
-        </div>
-      </section>
+        </details>
+      )}
 
-      {selectedRoom && (
-        <div className="modal-backdrop housekeeping-sheet-backdrop" onClick={() => setSelectedRoom(undefined)}>
-          <section className="housekeeping-sheet" onClick={(event) => event.stopPropagation()}>
-            <button
-              type="button"
-              className="modal-close"
-              onClick={() => setSelectedRoom(undefined)}
-              aria-label="Cerrar"
-            >
-              <X size={16} />
-            </button>
-            <div className="housekeeping-sheet-title">
-              <h2>🏠 Habitacion {selectedRoom.roomNumber}</h2>
-              {selectedRoom.accessCode && <strong>🔑 Codigo: {selectedRoom.accessCode}</strong>}
-            </div>
-            <div className="housekeeping-detail-list">
-              <span>👤 {roomAssignee(selectedRoom)}</span>
-              <span>🛏 {selectedRoom.housekeeping.bedDoneAt ? "Cama hecha" : "Cama pendiente"}</span>
-              <span>🧹 {selectedRoom.housekeeping.cleaningDoneAt ? "Limpieza hecha" : "Limpieza pendiente"}</span>
-            </div>
-            {canManageHousekeeping && (
-              <div className="assign-row">
-                <select
-                  value={assignmentTargetUserId}
-                  onChange={(event) => setAssignmentTargetUserId(event.target.value)}
-                >
-                  <option value="">Sin asignar</option>
-                  {assignableStaff.map((member) => (
-                    <option key={member.userId} value={member.userId}>
-                      {member.displayName} · {member.role}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={() => void runHousekeepingAction("assign")}
-                  disabled={!assignmentTargetUserId || housekeepingBusy === "assign"}
-                >
-                  <UserPlus size={15} /> Asignar
-                </button>
-              </div>
-            )}
-            <div className="housekeeping-action-grid">
+      {assignmentRoom && (
+        <BottomSheet title={`${t("assignRoom")} ${assignmentRoom.roomNumber}`} onClose={() => setAssignmentRoom(undefined)}>
+          <div className="staff-pick-list">
+            {assignableStaff.map((member) => (
               <button
+                key={member.userId}
                 type="button"
-                onClick={() => void runHousekeepingAction("claim")}
-                disabled={Boolean(housekeepingBusy)}
+                onClick={() => void runRoomAction(assignmentRoom, "assign", member.userId)}
               >
-                <UserCheck size={15} /> Me encargo
+                <UserCheck size={16} />
+                <span>{member.displayName}</span>
+                <small>{member.role}</small>
               </button>
-              <button
-                type="button"
-                onClick={() => void runHousekeepingAction("bed_done")}
-                disabled={Boolean(housekeepingBusy)}
-              >
-                <Bed size={15} /> Cama hecha
-              </button>
-              <button
-                type="button"
-                onClick={() => void runHousekeepingAction("cleaning_done")}
-                disabled={Boolean(housekeepingBusy)}
-              >
-                <Sparkles size={15} /> Limpieza hecha
-              </button>
-              <button
-                type="button"
-                className="primary-button"
-                onClick={() => void runHousekeepingAction("complete")}
-                disabled={Boolean(housekeepingBusy)}
-              >
-                <CheckCircle2 size={15} /> Finalizar
-              </button>
-            </div>
-          </section>
-        </div>
+            ))}
+          </div>
+        </BottomSheet>
+      )}
+
+      {detailRoom && (
+        <BottomSheet title={`${t("room")} ${detailRoom.roomNumber}`} onClose={() => setDetailRoom(undefined)}>
+          <div className="housekeeping-detail-list">
+            <span>{t("accessCode")}: <strong>{detailRoom.accessCode || "-"}</strong></span>
+            <span>{t("checkout")}: <strong>{new Date(detailRoom.checkoutTimestamp).toLocaleString()}</strong></span>
+            <span>{t("assigned")}: <strong>{roomAssignee(detailRoom) || t("notAssigned")}</strong></span>
+            <span>{t("bed")}: <strong>{detailRoom.housekeeping.bedDoneAt ? new Date(detailRoom.housekeeping.bedDoneAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : t("pending")}</strong></span>
+            <span>{t("cleaning")}: <strong>{detailRoom.housekeeping.cleaningDoneAt ? new Date(detailRoom.housekeeping.cleaningDoneAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : t("pending")}</strong></span>
+            <span>{t("finish")}: <strong>{detailRoom.housekeeping.completedBy?.displayName || "-"}</strong></span>
+          </div>
+        </BottomSheet>
       )}
 
       {manualOpen && (
-        <div className="modal-backdrop housekeeping-sheet-backdrop" onClick={() => setManualOpen(false)}>
-          <section className="housekeeping-sheet" onClick={(event) => event.stopPropagation()}>
-            <button
-              type="button"
-              className="modal-close"
-              onClick={() => setManualOpen(false)}
-              aria-label="Cerrar"
-            >
-              <X size={16} />
+        <BottomSheet title={t("manualCheckout")} onClose={() => setManualOpen(false)}>
+          <div className="manual-checkout-form">
+            <label>
+              <span>{t("room")}</span>
+              <select value={manualRoomId} onChange={(event) => setManualRoomId(event.target.value)}>
+                <option value="">-</option>
+                {(board?.allRooms || []).map((room) => (
+                  <option key={room.roomId} value={room.roomId}>{room.roomNumber} - {room.status}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>{t("assigned")}</span>
+              <select value={manualAssigneeUserId} onChange={(event) => setManualAssigneeUserId(event.target.value)}>
+                <option value="">-</option>
+                {assignableStaff.map((member) => (
+                  <option key={member.userId} value={member.userId}>{member.displayName} - {member.role}</option>
+                ))}
+              </select>
+            </label>
+            <button type="button" className="primary-button" onClick={() => void createManualCheckout()} disabled={busy !== "" || !manualRoomId}>
+              <Plus size={15} /> {t("manualCheckout")}
             </button>
-            <div className="housekeeping-sheet-title">
-              <h2>Checkout manual</h2>
-            </div>
-            <div className="manual-checkout-form">
-              <label>
-                <span>Habitacion</span>
-                <select value={manualRoomId} onChange={(event) => setManualRoomId(event.target.value)}>
-                  <option value="">Seleccionar</option>
-                  {(board?.allRooms || []).map((room) => (
-                    <option key={room.roomId} value={room.roomId}>
-                      {room.roomNumber} · {room.status}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span>Asignar a</span>
-                <select
-                  value={manualAssigneeUserId}
-                  onChange={(event) => setManualAssigneeUserId(event.target.value)}
-                >
-                  <option value="">Sin asignar</option>
-                  {assignableStaff.map((member) => (
-                    <option key={member.userId} value={member.userId}>
-                      {member.displayName} · {member.role}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                type="button"
-                className="primary-button"
-                onClick={() => void createManualCheckout()}
-                disabled={housekeepingBusy === "manual"}
-              >
-                <Plus size={15} /> Registrar checkout
-              </button>
-            </div>
-          </section>
-        </div>
+          </div>
+        </BottomSheet>
       )}
     </section>
+  );
+}
+
+function BottomSheet({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="modal-backdrop housekeeping-sheet-backdrop" onClick={onClose}>
+      <section className="housekeeping-sheet" onClick={(event) => event.stopPropagation()}>
+        <button type="button" className="modal-close" onClick={onClose} aria-label="Close">
+          <X size={16} />
+        </button>
+        <div className="housekeeping-sheet-title">
+          <h2>{title}</h2>
+        </div>
+        {children}
+      </section>
+    </div>
   );
 }

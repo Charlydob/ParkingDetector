@@ -12,6 +12,7 @@ import {
   revokeAdminTenantMembership,
   setAdminTenantModule,
   updateAdminTenant,
+  updateAdminTenantMembershipAlias,
   updateAdminTenantMembershipRole,
   type AdminTenantSummary,
 } from "../../services/backendApi";
@@ -285,6 +286,9 @@ function TenantUsers({
       onInvite={(input) => createAdminTenantInvitation(tenant.id, input)}
       onChangeRole={(membershipId, role) =>
         updateAdminTenantMembershipRole(tenant.id, membershipId, role).then(() => undefined)
+      }
+      onChangeAlias={(membershipId, alias) =>
+        updateAdminTenantMembershipAlias(tenant.id, membershipId, alias).then(() => undefined)
       }
       onRevokeMember={(membershipId) =>
         revokeAdminTenantMembership(tenant.id, membershipId).then(() => undefined)

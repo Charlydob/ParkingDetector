@@ -4,11 +4,15 @@ import { useAuth } from "../../auth/AuthContext";
 import { SettingsIntegrations } from "../../components/SettingsIntegrations";
 import {
   getBackendStatus,
+  getDashboardSettings,
   getAppVersion,
   getIntegrationSettings,
+  updateDashboardSettings,
   updateTenantProfile,
   type AppVersion,
   type BackendStatus,
+  type DashboardSettings,
+  type DashboardWidgetKey,
   type IntegrationSettings,
 } from "../../services/backendApi";
 import { getBackendUrl } from "../../services/backendConfigService";
@@ -19,6 +23,7 @@ export function SettingsPage() {
   const [notice, setNotice] = useState("");
   const [backendStatus, setBackendStatus] = useState<BackendStatus>();
   const [integrationSettings, setIntegrationSettings] = useState<IntegrationSettings>();
+  const [dashboardSettings, setDashboardSettings] = useState<DashboardSettings>();
   const [appVersion, setAppVersion] = useState<AppVersion>();
   const [backendUrl, setActiveBackendUrl] = useState(getBackendUrl());
   const activeTenant = session?.tenants.find((tenant) => tenant.id === activeTenantId);
@@ -42,6 +47,9 @@ export function SettingsPage() {
     setBackendStatus(nextStatus);
     setIntegrationSettings(nextSettings);
     setAppVersion(nextVersion);
+    if (canEditHotel) {
+      setDashboardSettings(await getDashboardSettings());
+    }
   }
 
   useEffect(() => {
@@ -71,6 +79,26 @@ export function SettingsPage() {
     });
     await refreshSession();
     setNotice("Hotel profile saved.");
+  }
+
+  async function saveDashboardWidgets(nextSettings = dashboardSettings) {
+    if (!nextSettings) return;
+    setDashboardSettings(await updateDashboardSettings(nextSettings));
+    setNotice("Dashboard widgets saved.");
+  }
+
+  function toggleWidget(role: keyof DashboardSettings["widgets"], key: DashboardWidgetKey) {
+    if (!dashboardSettings) return;
+    const next = {
+      widgets: {
+        ...dashboardSettings.widgets,
+        [role]: {
+          ...dashboardSettings.widgets[role],
+          [key]: !dashboardSettings.widgets[role][key],
+        },
+      },
+    };
+    setDashboardSettings(next);
   }
 
   return (
@@ -119,6 +147,36 @@ export function SettingsPage() {
                 Save hotel
               </button>
             </div>
+          </div>
+        </section>
+      )}
+      {canEditHotel && dashboardSettings && (
+        <section className="panel">
+          <div className="section-heading">
+            <h2>Dashboard widgets</h2>
+          </div>
+          <div className="settings-form dashboard-widget-settings">
+            {(Object.keys(dashboardSettings.widgets) as Array<keyof DashboardSettings["widgets"]>).map((role) => (
+              <div key={role} className="widget-role-block">
+                <strong>{role}</strong>
+                <div className="widget-toggle-grid">
+                  {(Object.keys(dashboardSettings.widgets[role]) as DashboardWidgetKey[]).map((key) => (
+                    <label key={key} className="checkbox-row">
+                      <input
+                        type="checkbox"
+                        checked={dashboardSettings.widgets[role][key]}
+                        onChange={() => toggleWidget(role, key)}
+                      />
+                      <span>{key}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ))}
+            <button type="button" onClick={() => void saveDashboardWidgets()}>
+              <Save size={15} />
+              Save widgets
+            </button>
           </div>
         </section>
       )}

@@ -24,6 +24,84 @@ function cleanString(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+export const DASHBOARD_WIDGET_KEYS = Object.freeze([
+  "housekeeping",
+  "checkouts",
+  "reservations",
+  "parking",
+  "recentActivity",
+  "notifications",
+  "telegram",
+  "diagnostics",
+]);
+
+export const DEFAULT_DASHBOARD_WIDGETS = Object.freeze({
+  staff: {
+    housekeeping: true,
+    checkouts: true,
+    reservations: false,
+    parking: false,
+    recentActivity: false,
+    notifications: true,
+    telegram: false,
+    diagnostics: false,
+  },
+  manager: {
+    housekeeping: true,
+    checkouts: true,
+    reservations: true,
+    parking: true,
+    recentActivity: true,
+    notifications: true,
+    telegram: false,
+    diagnostics: false,
+  },
+  tenant_admin: {
+    housekeeping: true,
+    checkouts: true,
+    reservations: true,
+    parking: true,
+    recentActivity: true,
+    notifications: true,
+    telegram: true,
+    diagnostics: false,
+  },
+  platform_admin: {
+    housekeeping: true,
+    checkouts: true,
+    reservations: true,
+    parking: true,
+    recentActivity: true,
+    notifications: true,
+    telegram: true,
+    diagnostics: true,
+  },
+});
+
+function cleanDashboardWidgets(widgets = {}) {
+  const source = widgets?.widgets && typeof widgets.widgets === "object" ? widgets.widgets : widgets;
+  const cleanRole = (role) => {
+    const defaults = DEFAULT_DASHBOARD_WIDGETS[role] || {};
+    const input = source?.[role] || {};
+
+    return Object.fromEntries(
+      DASHBOARD_WIDGET_KEYS.map((key) => [
+        key,
+        input[key] === undefined ? Boolean(defaults[key]) : Boolean(input[key]),
+      ]),
+    );
+  };
+
+  return {
+    widgets: {
+      staff: cleanRole("staff"),
+      manager: cleanRole("manager"),
+      tenant_admin: cleanRole("tenant_admin"),
+      platform_admin: cleanRole("platform_admin"),
+    },
+  };
+}
+
 function cleanTelegramId(value) {
   if (value === undefined || value === null) {
     return "";
@@ -132,6 +210,7 @@ function emptyTenantSettings(tenantId) {
         chatId: "",
       },
     },
+    dashboard: cleanDashboardWidgets(),
     integrations: {},
   };
 }
@@ -175,6 +254,7 @@ function normalizeSettings(tenantId, stored = {}) {
         diagnostics: cleanTelegramDiagnostics(next.notifications?.telegram?.diagnostics),
       },
     },
+    dashboard: cleanDashboardWidgets(next.dashboard?.widgets ? next.dashboard : { widgets: next.dashboard }),
   };
 }
 
@@ -207,6 +287,21 @@ export async function updateTenantSettings(database, tenantId, patch) {
   await database.setRecord("tenantSettings", tenantId, next);
 
   return next;
+}
+
+export async function getTenantDashboardSettings(database, tenantId) {
+  const settings = await getTenantSettings(database, tenantId);
+  return settings.dashboard;
+}
+
+export async function updateTenantDashboardSettings(database, tenantId, patch = {}) {
+  const current = await getTenantSettings(database, tenantId);
+  const dashboard = cleanDashboardWidgets({
+    widgets: deepMerge(current.dashboard?.widgets || {}, patch.widgets || patch || {}),
+  });
+
+  await updateTenantSettings(database, tenantId, { dashboard });
+  return dashboard;
 }
 
 export async function getPublicTenantSettings(database, tenantId) {
@@ -266,5 +361,6 @@ export async function getPublicTenantSettings(database, tenantId) {
       cameras: settings.frigate?.cameras || [],
     },
     notifications: telegram,
+    dashboard: settings.dashboard || cleanDashboardWidgets(),
   };
 }

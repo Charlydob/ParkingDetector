@@ -9,6 +9,7 @@ interface UserManagementPanelProps {
   compact?: boolean;
   onInvite: (input: { email: string; role: TenantRole }) => Promise<UserInvitation>;
   onChangeRole: (membershipId: string, role: TenantRole) => Promise<void>;
+  onChangeAlias?: (membershipId: string, alias: string) => Promise<void>;
   onRevokeMember: (membershipId: string) => Promise<void>;
   onGetInvitationLink: (invitationId: string) => Promise<{ inviteUrl: string }>;
   onRevokeInvitation: (invitationId: string) => Promise<void>;
@@ -31,6 +32,7 @@ export function UserManagementPanel({
   compact,
   onInvite,
   onChangeRole,
+  onChangeAlias,
   onRevokeMember,
   onGetInvitationLink,
   onRevokeInvitation,
@@ -143,7 +145,7 @@ export function UserManagementPanel({
         <div className="user-table">
           <div className="user-table-head">
             <span>Email</span>
-            <span>Name</span>
+            <span>Name / alias</span>
             <span>Role</span>
             <span>Telegram</span>
             <span>Actions</span>
@@ -152,7 +154,15 @@ export function UserManagementPanel({
             members.map((member) => (
               <div key={member.id} className="user-row">
                 <span>{member.user.email || member.userId}</span>
-                <span>{member.user.displayName || "-"}</span>
+                <AliasField
+                  member={member}
+                  disabled={busy !== "" || !onChangeAlias}
+                  onSave={
+                    onChangeAlias
+                      ? (alias) => run(`alias-${member.id}`, () => onChangeAlias(member.id, alias))
+                      : undefined
+                  }
+                />
                 <select
                   value={member.role}
                   onChange={(event) =>
@@ -238,6 +248,38 @@ export function UserManagementPanel({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function AliasField({
+  member,
+  disabled,
+  onSave,
+}: {
+  member: TenantMember;
+  disabled: boolean;
+  onSave?: (alias: string) => Promise<void>;
+}) {
+  const [alias, setAlias] = useState(member.alias || "");
+
+  return (
+    <div className="alias-cell">
+      <strong>{member.displayName || member.user.username || member.user.displayName || "-"}</strong>
+      <label>
+        <span className="sr-only">Alias</span>
+        <input
+          value={alias}
+          placeholder="Alias"
+          disabled={disabled}
+          onChange={(event) => setAlias(event.target.value)}
+          onBlur={() => {
+            if (onSave && alias.trim() !== (member.alias || "")) {
+              void onSave(alias);
+            }
+          }}
+        />
+      </label>
     </div>
   );
 }

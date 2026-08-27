@@ -10,6 +10,7 @@ import {
 import {
   requireHousekeepingPermission,
 } from "./housekeepingPermissions.js";
+import { displayNameForMembership } from "./userDisplayService.js";
 
 const PAIRING_DIAGNOSTIC_KEY = "telegramPairingCodes";
 const STAFF_PAIRING_DIAGNOSTIC_KEY = "telegramStaffPairingCodes";
@@ -202,10 +203,13 @@ async function resolveAssignmentTarget(database, tenantId, target) {
     .map((membership) => ({ membership, user: users.find((user) => user.id === membership.userId) }))
     .filter((item) => item.user);
   const lower = needle.toLowerCase();
-  const matches = members.filter(({ user }) =>
+  const matches = members.filter(({ membership, user }) =>
     needle.startsWith("@")
       ? cleanString(user.telegramUsername).replace(/^@/, "").toLowerCase() === lower.slice(1)
-      : cleanString(user.email).toLowerCase() === lower || cleanString(user.displayName).toLowerCase() === lower,
+      : cleanString(user.email).toLowerCase() === lower ||
+        cleanString(user.username).toLowerCase() === lower ||
+        cleanString(membership.alias).toLowerCase() === lower ||
+        cleanString(user.displayName).toLowerCase() === lower,
   );
   if (matches.length !== 1) {
     const error = new Error(matches.length ? "Assignment target is ambiguous." : "Assignment target not found in this tenant.");
@@ -228,7 +232,7 @@ async function hydratedHousekeeping(database, event) {
     const user = users.find((candidate) => candidate.id === id);
     if (!user) return null;
     const membership = memberships.find((candidate) => candidate.tenantId === event.tenantId && candidate.userId === id);
-    return { userId: user.id, displayName: user.displayName || user.email,
+    return { userId: user.id, displayName: displayNameForMembership(user, membership),
       ...(user.telegramUsername ? { telegramUsername: user.telegramUsername } : {}),
       ...(includeRole ? { role: user.globalRole === "platform_admin" ? "platform_admin" : membership?.role || null } : {}) };
   };
@@ -530,7 +534,9 @@ export async function createStaffPairingCode(database, session, tenantId) {
   state.codes[code] = { code, userId: session.user.id, tenantId, createdAt: now(), expiresAt };
   await database.setRecord("diagnostics", STAFF_PAIRING_DIAGNOSTIC_KEY, state);
   return { code, expiresAt, tenant: publicTenant(tenant), user: {
-    id: session.user.id, displayName: session.user.displayName, email: session.user.email,
+    id: session.user.id,
+    displayName: displayNameForMembership(session.user, membership),
+    email: session.user.email,
     telegramUserId: session.user.telegramUserId || null, telegramUsername: session.user.telegramUsername || null,
   } };
 }
@@ -561,8 +567,10 @@ export async function connectTelegramStaff(database, input = {}) {
   await database.setRecord("users", user.id, { ...user, telegramUserId, telegramUsername: username || null, telegramLinkedAt: now() });
   delete state.codes[code];
   await database.setRecord("diagnostics", STAFF_PAIRING_DIAGNOSTIC_KEY, state);
-  return { success: true, userId: user.id, displayName: user.displayName || user.email, role,
-    tenantId: tenant.id, telegramUsername: username || null, message: `Telegram linked to ${user.displayName || user.email}.` };
+  const membership = memberships.find((item) => item.tenantId === pairing.tenantId && item.userId === pairing.userId);
+  const displayName = displayNameForMembership(user, membership);
+  return { success: true, userId: user.id, displayName, role,
+    tenantId: tenant.id, telegramUsername: username || null, message: `Telegram linked to ${displayName}.` };
 }
 
 export async function registerManualTelegramCheckout(database, input = {}) {

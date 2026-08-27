@@ -19,6 +19,7 @@ export interface Tenant {
 export interface UserProfile {
   id: string;
   email: string;
+  username?: string | null;
   displayName?: string;
   globalRole?: GlobalRole;
   telegramUserId?: string | null;
@@ -33,13 +34,15 @@ export interface TenantMembership {
   tenantId: string;
   userId: string;
   role: TenantRole;
+  alias?: string | null;
   createdAt: string;
   updatedAt?: string;
 }
 
 export interface TenantMember extends TenantMembership {
   status: "active";
-  user: Pick<UserProfile, "id" | "email" | "displayName" | "telegramUserId" | "telegramUsername" | "telegramLinkedAt">;
+  displayName?: string;
+  user: Pick<UserProfile, "id" | "email" | "username" | "displayName" | "telegramUserId" | "telegramUsername" | "telegramLinkedAt">;
 }
 
 export interface UserInvitation {

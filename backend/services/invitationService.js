@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { sendUserInvitationNotification } from "./notificationService.js";
 import { createLoginSession, hashPassword, verifyPassword } from "./sessionService.js";
+import { displayNameForMembership } from "./userDisplayService.js";
 
 const INVITABLE_ROLES = new Set(["tenant_admin", "manager", "staff"]);
 const INVITATION_TTL_DAYS = Number(process.env.INVITATION_TTL_DAYS || 7);
@@ -128,11 +129,19 @@ export async function listTenantMembers(database, tenantId) {
     .map((membership) => ({
       ...membership,
       status: "active",
-      user: users.find((user) => user.id === membership.userId) || {
-        id: membership.userId,
-        email: "",
-        displayName: "",
-      },
+      displayName: displayNameForMembership(
+        users.find((user) => user.id === membership.userId),
+        membership,
+      ),
+      user: (() => {
+        const user = users.find((candidate) => candidate.id === membership.userId) || {
+          id: membership.userId,
+          email: "",
+          displayName: "",
+        };
+        const { passwordHash, usernameNormalized, ...safeUser } = user;
+        return safeUser;
+      })(),
     }));
 }
 

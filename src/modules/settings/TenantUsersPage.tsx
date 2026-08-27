@@ -7,6 +7,7 @@ import {
   regenerateTenantInvitation,
   revokeTenantInvitation,
   revokeTenantMembership,
+  updateTenantMembershipAlias,
   updateTenantMembershipRole,
 } from "../../services/backendApi";
 import type { TenantMember, UserInvitation } from "../../types/tenant";
@@ -46,6 +47,9 @@ export function TenantUsersPage() {
           onInvite={createTenantInvitation}
           onChangeRole={(membershipId, role) =>
             updateTenantMembershipRole(membershipId, role).then(() => undefined)
+          }
+          onChangeAlias={(membershipId, alias) =>
+            updateTenantMembershipAlias(membershipId, alias).then(() => undefined)
           }
           onRevokeMember={(membershipId) =>
             revokeTenantMembership(membershipId).then(() => undefined)

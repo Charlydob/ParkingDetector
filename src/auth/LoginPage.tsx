@@ -1,10 +1,12 @@
 import { KeyRound } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { APP_NAME } from "../config/app";
+import { useI18n } from "../i18n";
 import { useAuth } from "./AuthContext";
 
 export function LoginPage() {
   const { login, error: sessionError } = useAuth();
+  const { t } = useI18n();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [notice, setNotice] = useState("");
@@ -30,12 +32,12 @@ export function LoginPage() {
           <KeyRound size={28} />
           <div>
             <h1>{APP_NAME}</h1>
-            <p>Sign in to manage hotel operations.</p>
+            <p>{t("loginSubtitle")}</p>
           </div>
         </div>
         {(notice || sessionError) && <div className="notice error">{notice || sessionError}</div>}
         <label>
-          <span>Email</span>
+          <span>{t("email")}</span>
           <input
             type="email"
             autoComplete="email"
@@ -44,7 +46,7 @@ export function LoginPage() {
           />
         </label>
         <label>
-          <span>Password</span>
+          <span>{t("password")}</span>
           <input
             type="password"
             autoComplete="current-password"
@@ -53,7 +55,7 @@ export function LoginPage() {
           />
         </label>
         <button className="primary-button" type="submit" disabled={busy !== ""}>
-          Sign in
+          {t("signIn")}
         </button>
       </form>
     </main>

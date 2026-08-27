@@ -7,7 +7,15 @@ import {
   revokeUserInvitation,
   updateTenantMembershipRole,
 } from "../services/invitationService.js";
-import { requireTenant, requireTenantAdmin, updateTenant } from "../services/tenantService.js";
+import { requireTenant, requireTenantAdmin, requireTenantManager, updateTenant } from "../services/tenantService.js";
+import {
+  getTenantDashboardSettings,
+  updateTenantDashboardSettings,
+} from "../services/tenantSettingsService.js";
+import {
+  updateOwnUserProfile,
+  updateTenantMembershipAlias,
+} from "../services/userDisplayService.js";
 
 function requestBaseUrl(request) {
   return (
@@ -21,6 +29,28 @@ function requestBaseUrl(request) {
 export async function handleUserManagementRoute({ request, pathname, body, context }) {
   const { database, session } = context;
   const tenantId = requireTenant(session);
+
+  if (request.method === "PATCH" && pathname === "/api/tenant/me/profile") {
+    return {
+      status: 200,
+      payload: await updateOwnUserProfile(database, session, body),
+    };
+  }
+
+  if (request.method === "GET" && pathname === "/api/tenant/dashboard-settings") {
+    return {
+      status: 200,
+      payload: await getTenantDashboardSettings(database, tenantId),
+    };
+  }
+
+  if (request.method === "PATCH" && pathname === "/api/tenant/dashboard-settings") {
+    requireTenantAdmin(session, tenantId);
+    return {
+      status: 200,
+      payload: await updateTenantDashboardSettings(database, tenantId, body),
+    };
+  }
 
   if (request.method === "PATCH" && pathname === "/api/tenant/profile") {
     requireTenantAdmin(session, tenantId);
@@ -60,6 +90,21 @@ export async function handleUserManagementRoute({ request, pathname, body, conte
         tenantId,
         decodeURIComponent(membershipMatch[1]),
         body.role,
+      ),
+    };
+  }
+
+  const membershipAliasMatch = pathname.match(/^\/api\/tenant\/memberships\/([^/]+)\/alias$/);
+  if (request.method === "PATCH" && membershipAliasMatch) {
+    return {
+      status: 200,
+      payload: await updateTenantMembershipAlias(
+        database,
+        session,
+        tenantId,
+        decodeURIComponent(membershipAliasMatch[1]),
+        body,
+        requireTenantManager,
       ),
     };
   }

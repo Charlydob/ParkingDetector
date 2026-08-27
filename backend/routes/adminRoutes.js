@@ -20,6 +20,10 @@ import {
   revokeUserInvitation,
   updateTenantMembershipRole,
 } from "../services/invitationService.js";
+import {
+  displayNameForMembership,
+  updateTenantMembershipAlias,
+} from "../services/userDisplayService.js";
 
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
@@ -39,11 +43,19 @@ async function buildTenantAdminSummary(database, tenant, memberships, users) {
   const tenantUsers = tenantMemberships.map((membership) => ({
     ...membership,
     status: "active",
-    user: safeArray(users).find((user) => user.id === membership.userId) || {
-      id: membership.userId,
-      email: "",
-      displayName: "",
-    },
+    displayName: displayNameForMembership(
+      safeArray(users).find((user) => user.id === membership.userId),
+      membership,
+    ),
+    user: (() => {
+      const user = safeArray(users).find((candidate) => candidate.id === membership.userId) || {
+        id: membership.userId,
+        email: "",
+        displayName: "",
+      };
+      const { passwordHash, usernameNormalized, ...safeUser } = user;
+      return safeUser;
+    })(),
   }));
 
   return {
@@ -192,6 +204,23 @@ export async function handleAdminRoute({ request, pathname, body, context }) {
         decodeURIComponent(membershipDeleteMatch[1]),
         decodeURIComponent(membershipDeleteMatch[2]),
         body.role,
+      ),
+    };
+  }
+
+  const membershipAliasMatch = pathname.match(
+    /^\/api\/admin\/tenants\/([^/]+)\/memberships\/([^/]+)\/alias$/,
+  );
+  if (request.method === "PATCH" && membershipAliasMatch) {
+    return {
+      status: 200,
+      payload: await updateTenantMembershipAlias(
+        database,
+        session,
+        decodeURIComponent(membershipAliasMatch[1]),
+        decodeURIComponent(membershipAliasMatch[2]),
+        body,
+        (currentSession) => requirePlatformAdmin(currentSession),
       ),
     };
   }

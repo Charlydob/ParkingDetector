@@ -55,7 +55,7 @@ function modulesResponse(moduleMap = {}) {
 }
 
 function publicUser(user) {
-  const { passwordHash, ...safeUser } = user;
+  const { passwordHash, usernameNormalized, ...safeUser } = user;
   return safeUser;
 }
 
@@ -284,6 +284,16 @@ export function requireTenantAdmin(session, tenantId = session.activeTenantId) {
 
   if (role !== "tenant_admin" && role !== "platform_admin") {
     const error = new Error("Tenant admin access is required.");
+    error.statusCode = 403;
+    throw error;
+  }
+}
+
+export function requireTenantManager(session, tenantId = session.activeTenantId) {
+  const role = getTenantRole(session, tenantId);
+
+  if (!["platform_admin", "tenant_admin", "manager"].includes(role || "")) {
+    const error = new Error("Manager access is required.");
     error.statusCode = 403;
     throw error;
   }

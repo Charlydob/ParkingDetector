@@ -1,8 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  DEFAULT_DASHBOARD_WIDGETS,
+  getTenantDashboardSettings,
   getPublicTenantSettings,
   getTenantSettings,
+  updateTenantDashboardSettings,
   updateTenantSettings,
 } from "./tenantSettingsService.js";
 import { createTenant } from "./tenantService.js";
@@ -135,4 +138,24 @@ test("legacy Telegram bot tokens are not exposed or persisted on settings update
 
   assert.equal(database.data.tenantSettings["hotel-a"].notifications.telegram.chatId, "chat-b");
   assert.equal(database.data.tenantSettings["hotel-a"].notifications.telegram.botToken, undefined);
+});
+
+test("dashboard widget visibility is tenant-scoped settings only", async () => {
+  const database = createFakeDatabase();
+
+  const defaults = await getTenantDashboardSettings(database, "hotel-a");
+  assert.equal(defaults.widgets.staff.housekeeping, DEFAULT_DASHBOARD_WIDGETS.staff.housekeeping);
+  assert.equal(defaults.widgets.staff.parking, false);
+
+  const updated = await updateTenantDashboardSettings(database, "hotel-a", {
+    widgets: {
+      staff: { parking: true, reservations: true },
+    },
+  });
+  const otherTenant = await getTenantDashboardSettings(database, "hotel-b");
+
+  assert.equal(updated.widgets.staff.parking, true);
+  assert.equal(updated.widgets.staff.reservations, true);
+  assert.equal(otherTenant.widgets.staff.parking, false);
+  assert.equal(database.data.tenantModules["hotel-a"], undefined);
 });

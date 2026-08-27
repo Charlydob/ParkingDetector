@@ -73,6 +73,7 @@ const JSON_FIELDS = new Set([
   "telegram",
   "notifications",
   "checkout",
+  "dashboard",
   "integrations",
   "metadata",
   "associationCandidates",
