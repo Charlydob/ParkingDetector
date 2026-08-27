@@ -185,6 +185,7 @@ export function CheckoutPage() {
   const [tab, setTab] = useState<"board" | "settings">("board");
   const [roomNumber, setRoomNumber] = useState("");
   const [roomName, setRoomName] = useState("");
+  const [roomAccessCode, setRoomAccessCode] = useState("");
   const [bulkRoomNumbers, setBulkRoomNumbers] = useState("");
   const [createQrForBulkRooms, setCreateQrForBulkRooms] = useState(true);
   const [selectedRoomId, setSelectedRoomId] = useState("");
@@ -240,9 +241,15 @@ export function CheckoutPage() {
   }
 
   async function addRoom() {
-    const room = await createRoom({ number: roomNumber, name: roomName, status: "unknown" });
+    const room = await createRoom({
+      number: roomNumber,
+      name: roomName,
+      accessCode: roomAccessCode || null,
+      status: "unknown",
+    });
     setRoomNumber("");
     setRoomName("");
+    setRoomAccessCode("");
     setSelectedRoomId(room.id);
     setNotice("Room created.");
     await reload();
@@ -277,6 +284,11 @@ export function CheckoutPage() {
 
   async function deactivateRoom(room: Room) {
     await updateRoom(room.id, { active: false });
+    await reload();
+  }
+
+  async function saveRoomAccessCode(room: Room, accessCode: string) {
+    await updateRoom(room.id, { accessCode: accessCode || null });
     await reload();
   }
 
@@ -536,6 +548,14 @@ export function CheckoutPage() {
                   <span>Name</span>
                   <input value={roomName} onChange={(event) => setRoomName(event.target.value)} />
                 </label>
+                <label>
+                  <span>Código de acceso (caja/puerta)</span>
+                  <input
+                    type="text"
+                    value={roomAccessCode}
+                    onChange={(event) => setRoomAccessCode(event.target.value)}
+                  />
+                </label>
               </div>
               <button type="button" onClick={addRoom} disabled={!roomNumber.trim()}>
                 <Plus size={15} />
@@ -567,6 +587,20 @@ export function CheckoutPage() {
                   <div key={room.id}>
                     <strong>Room {room.number}</strong>
                     <span>{room.name || "-"}</span>
+                    <label>
+                      <span>Código de acceso (caja/puerta)</span>
+                      <input
+                        type="text"
+                        defaultValue={room.accessCode ?? ""}
+                        onBlur={(event) => {
+                          if (event.target.value !== (room.accessCode ?? "")) {
+                            void saveRoomAccessCode(room, event.target.value).catch((error) =>
+                              setNotice(error instanceof Error ? error.message : "Could not update room."),
+                            );
+                          }
+                        }}
+                      />
+                    </label>
                     <span>{roomStatusLabel(room.status)}</span>
                     <button type="button" onClick={() => deactivateRoom(room)}>
                       Deactivate

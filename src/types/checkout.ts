@@ -14,6 +14,7 @@ export interface Room {
   tenantId: string;
   number: string;
   name?: string;
+  accessCode: string | null;
   active: boolean;
   status: RoomStatus;
   createdAt: string;

@@ -226,6 +226,7 @@ export async function getHousekeepingBoard(database, input = {}) {
     .sort((left, right) => String(left.number).localeCompare(String(right.number)))
     .map((room) => ({
       roomId: room.id, roomNumber: room.number, roomName: room.name || "",
+      room: room.number, accessCode: room.accessCode ?? null,
       checkoutDueDate: String(room.checkoutDueDate).slice(0, 10), source: room.checkoutDueSource || "manual",
     }));
   const done = rooms
