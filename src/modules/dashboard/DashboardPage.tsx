@@ -1,5 +1,12 @@
+import { Copy } from "lucide-react";
 import { useEffect, useState } from "react";
-import { getBackendStatus, getCheckoutOverview, getParkingDetections } from "../../services/backendApi";
+import { useAuth } from "../../auth/AuthContext";
+import {
+  generateTelegramStaffPairingCode,
+  getBackendStatus,
+  getCheckoutOverview,
+  getParkingDetections,
+} from "../../services/backendApi";
 import type { BackendStatus } from "../../services/backendApi";
 import type { CheckoutOverview } from "../../types/checkout";
 import type { ModuleId } from "../../types/modules";
@@ -20,9 +27,15 @@ function isToday(value?: string | null): boolean {
 }
 
 export function DashboardPage({ enabledModules }: { enabledModules: Record<ModuleId, boolean> }) {
+  const { user } = useAuth();
   const [status, setStatus] = useState<BackendStatus>();
   const [checkout, setCheckout] = useState<CheckoutOverview>();
   const [detections, setDetections] = useState<Detection[]>([]);
+  const [telegramPairing, setTelegramPairing] = useState<
+    Awaited<ReturnType<typeof generateTelegramStaffPairingCode>> | undefined
+  >();
+  const [telegramBusy, setTelegramBusy] = useState(false);
+  const [telegramNotice, setTelegramNotice] = useState("");
 
   useEffect(() => {
     void getBackendStatus().then(setStatus).catch(() => undefined);
@@ -38,6 +51,28 @@ export function DashboardPage({ enabledModules }: { enabledModules: Record<Modul
   const waitingRooms =
     checkout?.rooms.filter((room) => room.status === "ready_for_cleaning").length ?? 0;
   const detectionsToday = detections.filter((detection) => isToday(detection.detectedAt)).length;
+  const telegramCommand = telegramPairing ? `/staff ${telegramPairing.code}` : "";
+
+  async function linkTelegram() {
+    setTelegramBusy(true);
+    setTelegramNotice("");
+    try {
+      setTelegramPairing(await generateTelegramStaffPairingCode());
+    } catch (error) {
+      setTelegramNotice(error instanceof Error ? error.message : "No se pudo generar el código.");
+    } finally {
+      setTelegramBusy(false);
+    }
+  }
+
+  async function copyTelegramCommand() {
+    try {
+      await navigator.clipboard.writeText(telegramCommand);
+      setTelegramNotice("Comando copiado.");
+    } catch {
+      setTelegramNotice("No se pudo copiar. Mantén pulsado el comando para copiarlo.");
+    }
+  }
 
   return (
     <section className="module-page">
@@ -71,6 +106,43 @@ export function DashboardPage({ enabledModules }: { enabledModules: Record<Modul
           <strong>{status?.reservationsLoaded ?? 0}</strong>
         </article>
       </div>
+      <section className="panel telegram-link-card">
+        <div className="section-heading">
+          <h2>Telegram</h2>
+        </div>
+        {user?.telegramUserId ? (
+          <div className="telegram-link-status">
+            <strong>✅ Telegram vinculado</strong>
+            {user.telegramUsername && <span>@{user.telegramUsername.replace(/^@/, "")}</span>}
+          </div>
+        ) : (
+          <div className="telegram-link-content">
+            <strong>Telegram no vinculado</strong>
+            <p>Vincula tu usuario de Telegram para utilizar las funciones de housekeeping.</p>
+            {!telegramPairing && (
+              <button type="button" onClick={() => void linkTelegram()} disabled={telegramBusy}>
+                {telegramBusy ? "Generando…" : "Vincular Telegram"}
+              </button>
+            )}
+            {telegramPairing && (
+              <div className="source-preview telegram-command">
+                <code>{telegramCommand}</code>
+                <p>Pega este comando en el bot de Telegram.</p>
+                <div className="meta-list">
+                  <span>Caduca</span>
+                  <strong>{new Date(telegramPairing.expiresAt).toLocaleString()}</strong>
+                </div>
+                <div className="button-row">
+                  <button type="button" onClick={() => void copyTelegramCommand()}>
+                    <Copy size={15} /> Copiar
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        {telegramNotice && <p className="telegram-link-notice" role="status">{telegramNotice}</p>}
+      </section>
       <section className="panel">
         <div className="section-heading">
           <h2>Recent Activity</h2>

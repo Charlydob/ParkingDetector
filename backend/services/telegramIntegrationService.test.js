@@ -213,6 +213,55 @@ test("staff pairing is one-use and linked staff can complete the housekeeping ta
   await assert.rejects(() => handleHousekeepingAction(database, { ...actor, action: "assign", assignmentTarget: "staff@example.test" }), /Manager access/);
 });
 
+test("personal Telegram pairing supports every tenant role and stores only the authenticated user", async () => {
+  const tenantId = "hotel-a";
+  const users = Object.fromEntries(
+    ["staff", "manager", "tenant_admin", "platform_admin", "outsider"].map((id) => [
+      id,
+      { id, email: `${id}@example.test`, displayName: id },
+    ]),
+  );
+  const memberships = Object.fromEntries(
+    ["staff", "manager", "tenant_admin"].map((role) => [
+      role,
+      { id: `membership-${role}`, tenantId, userId: role, role },
+    ]),
+  );
+  const database = createFakeDatabase({
+    tenants: { [tenantId]: { id: tenantId, name: "Hotel A", slug: "hotel-a", active: true } },
+    users,
+    memberships,
+  });
+
+  for (const role of ["staff", "manager", "tenant_admin"]) {
+    const pairing = await createStaffPairingCode(database, {
+      user: users[role],
+      memberships: [memberships[role]],
+      isPlatformAdmin: false,
+    }, tenantId);
+    assert.equal(database.data.diagnostics.telegramStaffPairingCodes.codes[pairing.code].userId, role);
+  }
+
+  const platformPairing = await createStaffPairingCode(database, {
+    user: users.platform_admin,
+    memberships: [],
+    isPlatformAdmin: true,
+  }, tenantId);
+  assert.equal(
+    database.data.diagnostics.telegramStaffPairingCodes.codes[platformPairing.code].userId,
+    "platform_admin",
+  );
+
+  await assert.rejects(
+    () => createStaffPairingCode(database, {
+      user: users.outsider,
+      memberships: [],
+      isPlatformAdmin: false,
+    }, tenantId),
+    (error) => error.statusCode === 403,
+  );
+});
+
 test("staff cannot register manual checkout while manager can resolve tenant by connected chat", async () => {
   const database = createFakeDatabase({
     tenants: { "hotel-a": { id: "hotel-a", name: "Hotel A", slug: "hotel-a", active: true } },
