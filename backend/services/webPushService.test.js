@@ -2,9 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import webpush from "web-push";
 import {
+  DEFAULT_VAPID_SUBJECT,
   ensureWebPushConfig,
+  getScheduledPushStatus,
   getPushStatus,
   processDueScheduledPushes,
+  resolveVapidSubject,
   schedulePush,
   sendPushToSubscription,
   sendTestPushToSubscription,
@@ -61,6 +64,25 @@ function validVapidKeys() {
   return webpush.generateVAPIDKeys();
 }
 
+test("default VAPID subject is the public production origin", () => {
+  assert.equal(DEFAULT_VAPID_SUBJECT, "https://hotelapp.charlydob.com");
+  assert.equal(resolveVapidSubject({}), "https://hotelapp.charlydob.com");
+  assert.equal(
+    resolveVapidSubject({
+      VAPID_SUBJECT: " https://custom.example ",
+      WEB_PUSH_SUBJECT: "https://fallback.example",
+    }),
+    "https://custom.example",
+  );
+  assert.equal(
+    resolveVapidSubject({
+      VAPID_SUBJECT: " ",
+      WEB_PUSH_SUBJECT: " https://web-push.example ",
+    }),
+    "https://web-push.example",
+  );
+});
+
 test("VAPID keys are generated once and reused across service calls", async () => {
   const database = createFakeDatabase();
   let generated = 0;
@@ -89,6 +111,49 @@ test("VAPID keys are generated once and reused across service calls", async () =
     const afterRestart = await ensureWebPushConfig(database);
     assert.equal(afterRestart.publicKey, "public-1");
     assert.equal(generated, 1);
+  } finally {
+    reset();
+  }
+});
+
+test("existing VAPID keys are reused for sends without regeneration", async () => {
+  const keys = validVapidKeys();
+  const database = createFakeDatabase({
+    webPushConfigs: {
+      global: {
+        id: "global",
+        publicKey: keys.publicKey,
+        privateKey: keys.privateKey,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    },
+  });
+  let generated = 0;
+  const reset = setWebPushTestHooks({
+    generateVapidKeys() {
+      generated += 1;
+      return validVapidKeys();
+    },
+    sendNotification: async () => ({ statusCode: 201 }),
+  });
+
+  try {
+    const subscription = await subscribeUserPush(database, {
+      userId: "user-a",
+      tenantId: "hotel-a",
+      subscription: browserSubscription("endpoint-a"),
+    });
+    const result = await sendPushToSubscription(
+      database,
+      database.data.pushSubscriptions[subscription.id],
+      { title: "HotelApp" },
+    );
+
+    assert.equal(result.sent, true);
+    assert.equal(generated, 0);
+    assert.equal(database.data.webPushConfigs.global.publicKey, keys.publicKey);
+    assert.equal(database.data.webPushConfigs.global.privateKey, keys.privateKey);
   } finally {
     reset();
   }
@@ -209,6 +274,60 @@ test("404 and 410 Web Push responses disable dead subscriptions", async () => {
   }
 });
 
+test("Apple BadJwtToken Web Push failures expose safe diagnostics", async () => {
+  const keys = validVapidKeys();
+  const database = createFakeDatabase({
+    webPushConfigs: {
+      global: {
+        id: "global",
+        publicKey: keys.publicKey,
+        privateKey: keys.privateKey,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    },
+  });
+  const reset = setWebPushTestHooks({
+    sendNotification: async () => {
+      const error = new Error("Apple Web Push rejected the JWT.");
+      error.statusCode = 403;
+      error.body = '{"reason":"BadJwtToken"}';
+      error.headers = {
+        "content-type": "application/json",
+        "apns-id": "test-apns-id",
+        authorization: "Bearer should-not-leak",
+      };
+      throw error;
+    },
+  });
+
+  try {
+    const subscription = await subscribeUserPush(database, {
+      userId: "user-a",
+      tenantId: "hotel-a",
+      subscription: browserSubscription("endpoint-a"),
+    });
+    const result = await sendPushToSubscription(
+      database,
+      database.data.pushSubscriptions[subscription.id],
+      { title: "HotelApp" },
+    );
+
+    assert.equal(result.sent, false);
+    assert.equal(result.httpStatus, 403);
+    assert.equal(result.providerReason, "BadJwtToken");
+    assert.equal(result.diagnostics.statusCode, 403);
+    assert.equal(result.diagnostics.message, "Apple Web Push rejected the JWT.");
+    assert.equal(result.diagnostics.body, '{"reason":"BadJwtToken"}');
+    assert.equal(result.diagnostics.headers["content-type"], "application/json");
+    assert.equal(result.diagnostics.headers["apns-id"], "test-apns-id");
+    assert.equal(Object.hasOwn(result.diagnostics.headers, "authorization"), false);
+    assert.equal(JSON.stringify(result).includes(keys.privateKey), false);
+  } finally {
+    reset();
+  }
+});
+
 test("push preferences are isolated by user and tenant", async () => {
   const database = createFakeDatabase();
 
@@ -270,6 +389,13 @@ test("scheduled push is persisted and sent when due without a frontend timer", a
     });
 
     assert.equal(database.data.scheduledPushes[scheduled.id].status, "pending");
+    const pendingStatus = await getScheduledPushStatus(database, {
+      id: scheduled.id,
+      userId: "user-a",
+      tenantId: "hotel-a",
+    });
+    assert.equal(pendingStatus.status, "pending");
+    assert.equal(pendingStatus.sendAt, scheduled.sendAt);
 
     const results = await processDueScheduledPushes(database);
     assert.equal(results.length, 1);
@@ -277,6 +403,66 @@ test("scheduled push is persisted and sent when due without a frontend timer", a
     assert.equal(database.data.scheduledPushes[scheduled.id].status, "sent");
     assert.equal(sent.length, 1);
     assert.equal(sent[0].payload.body, "scheduled");
+    const sentStatus = await getScheduledPushStatus(database, {
+      id: scheduled.id,
+      userId: "user-a",
+      tenantId: "hotel-a",
+    });
+    assert.equal(sentStatus.status, "sent");
+    assert.ok(sentStatus.sentAt);
+    assert.equal(sentStatus.error, "");
+    assert.equal(sentStatus.providerReason, "");
+  } finally {
+    reset();
+  }
+});
+
+test("scheduled push status reflects provider failures", async () => {
+  const database = createFakeDatabase({
+    tenants: {
+      "hotel-a": { id: "hotel-a", slug: "hotel-a", name: "Hotel A", active: true },
+    },
+  });
+  const reset = setWebPushTestHooks({
+    generateVapidKeys: validVapidKeys,
+    sendNotification: async () => {
+      const error = new Error("Apple Web Push rejected the JWT.");
+      error.statusCode = 403;
+      error.body = '{"reason":"BadJwtToken"}';
+      throw error;
+    },
+  });
+
+  try {
+    await subscribeUserPush(database, {
+      userId: "user-a",
+      tenantId: "hotel-a",
+      subscription: browserSubscription("endpoint-a"),
+    });
+    const scheduled = await schedulePush(database, {
+      userId: "user-a",
+      tenantId: "hotel-a",
+      endpoint: "endpoint-a",
+      title: "HotelApp",
+      body: "scheduled",
+      url: "/t/hotel-a/",
+      sendAt: new Date(Date.now() - 1000).toISOString(),
+    });
+
+    const results = await processDueScheduledPushes(database);
+    assert.equal(results.length, 1);
+    assert.equal(results[0].sent, false);
+    assert.equal(database.data.scheduledPushes[scheduled.id].status, "failed");
+
+    const status = await getScheduledPushStatus(database, {
+      id: scheduled.id,
+      userId: "user-a",
+      tenantId: "hotel-a",
+    });
+    assert.equal(status.status, "failed");
+    assert.equal(status.error, "Apple Web Push rejected the JWT.");
+    assert.equal(status.httpStatus, 403);
+    assert.equal(status.providerReason, "BadJwtToken");
   } finally {
     reset();
   }

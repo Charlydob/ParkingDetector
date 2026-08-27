@@ -1,4 +1,5 @@
 import {
+  getScheduledPushStatus,
   getPushStatus,
   schedulePush,
   sendTestPushToSubscription,
@@ -15,6 +16,21 @@ function clampDelaySeconds(value) {
   }
 
   return Math.max(5, Math.min(600, Math.round(parsed)));
+}
+
+function pushTestFailurePayload(result) {
+  const providerReason = result.providerReason || result.diagnostics?.providerReason || "";
+  const error = providerReason
+    ? `Web Push provider rejected the notification: ${providerReason}.`
+    : result.error || "Web Push failed.";
+
+  return {
+    success: false,
+    httpStatus: result.httpStatus,
+    error,
+    providerReason,
+    ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
+  };
 }
 
 export async function handlePushRoute({ request, pathname, body, context }) {
@@ -69,12 +85,21 @@ export async function handlePushRoute({ request, pathname, body, context }) {
     });
 
     return {
-      status: result.sent ? 200 : 502,
-      payload: {
-        success: Boolean(result.sent),
-        error: result.error || "",
-        httpStatus: result.httpStatus,
-      },
+      status: result.sent ? 200 : result.httpStatus || 502,
+      payload: result.sent ? { success: true, httpStatus: result.httpStatus } : pushTestFailurePayload(result),
+    };
+  }
+
+  const scheduledStatusMatch = pathname.match(/^\/api\/push\/test-schedule\/([^/]+)$/);
+  if (request.method === "GET" && scheduledStatusMatch) {
+    const activeTenantId = requireTenant(session);
+    return {
+      status: 200,
+      payload: await getScheduledPushStatus(database, {
+        id: decodeURIComponent(scheduledStatusMatch[1]),
+        userId,
+        tenantId: activeTenantId,
+      }),
     };
   }
 

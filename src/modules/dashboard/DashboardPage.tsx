@@ -16,6 +16,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "../../auth/AuthContext";
 import {
+  BackendRequestError,
   generateTelegramStaffPairingCode,
   getBackendStatus,
   getCheckoutOverview,
@@ -23,6 +24,7 @@ import {
   getHousekeepingStaff,
   getParkingDetections,
   getPushStatus,
+  getScheduledPushTest,
   manualHousekeepingCheckout,
   performHousekeepingAction,
   schedulePushTest,
@@ -36,6 +38,7 @@ import type {
   HousekeepingStaffMember,
   PushPreference,
   PushStatus,
+  ScheduledPushTestStatus,
 } from "../../services/backendApi";
 import {
   activatePushDevice,
@@ -89,6 +92,33 @@ function permissionState(): PermissionState {
   return "Notification" in window ? Notification.permission : "unsupported";
 }
 
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function numberValue(value: unknown): number | undefined {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function pushFailureMessage(error: unknown): string {
+  if (error instanceof BackendRequestError) {
+    const providerReason = stringValue(error.payload?.providerReason);
+    const payloadError = stringValue(error.payload?.error);
+    const httpStatus = numberValue(error.payload?.httpStatus) || error.status;
+    const message = providerReason || payloadError || error.message;
+
+    return httpStatus ? `${message} (HTTP ${httpStatus})` : message;
+  }
+
+  return error instanceof Error ? error.message : "No se pudo enviar la prueba.";
+}
+
+function scheduledPushFailureMessage(status: ScheduledPushTestStatus): string {
+  const message = status.providerReason || status.error || "No se pudo enviar la notificacion.";
+  return status.httpStatus ? `${message} (HTTP ${status.httpStatus})` : message;
+}
+
 function selectedRoomFromBoard(board: HousekeepingBoard, current?: HousekeepingRoomItem) {
   const queryRoom = new URLSearchParams(window.location.search).get("housekeepingRoom");
   const needle = queryRoom || current?.roomNumber || current?.roomId || "";
@@ -117,6 +147,7 @@ export function DashboardPage({ enabledModules }: { enabledModules: Record<Modul
   const [currentSubscription, setCurrentSubscription] = useState<PushSubscription | null>(null);
   const [pushBusy, setPushBusy] = useState("");
   const [pushNotice, setPushNotice] = useState("");
+  const [scheduledPushTestId, setScheduledPushTestId] = useState("");
   const [testDelay, setTestDelay] = useState(20);
   const [board, setBoard] = useState<HousekeepingBoard>();
   const [staff, setStaff] = useState<HousekeepingStaffMember[]>([]);
@@ -225,6 +256,45 @@ export function DashboardPage({ enabledModules }: { enabledModules: Record<Modul
     return () => navigator.serviceWorker.removeEventListener("message", handler);
   }, [refreshHousekeeping]);
 
+  useEffect(() => {
+    if (!scheduledPushTestId) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    async function refreshScheduledPushTest() {
+      try {
+        const status = await getScheduledPushTest(scheduledPushTestId);
+        if (cancelled) {
+          return;
+        }
+
+        if (status.status === "sent") {
+          setPushNotice("✅ Notificación enviada");
+          setScheduledPushTestId("");
+        } else if (status.status === "failed") {
+          setPushNotice(`❌ Error: ${scheduledPushFailureMessage(status)}`);
+          setScheduledPushTestId("");
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setPushNotice(`❌ Error: ${pushFailureMessage(error)}`);
+          setScheduledPushTestId("");
+        }
+      }
+    }
+
+    void refreshScheduledPushTest();
+    const interval = window.setInterval(() => {
+      void refreshScheduledPushTest();
+    }, 2_000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [scheduledPushTestId]);
+
   const checkoutsToday = checkout?.events.filter((event) => isToday(event.timestamp)).length ?? 0;
   const waitingRooms =
     checkout?.rooms.filter((room) => room.status === "ready_for_cleaning").length ?? 0;
@@ -308,7 +378,7 @@ export function DashboardPage({ enabledModules }: { enabledModules: Record<Modul
       await sendPushTest(currentEndpoint);
       setPushNotice("Prueba enviada.");
     } catch (error) {
-      setPushNotice(error instanceof Error ? error.message : "No se pudo enviar la prueba.");
+      setPushNotice(`❌ Error: ${pushFailureMessage(error)}`);
     } finally {
       setPushBusy("");
     }
@@ -324,11 +394,10 @@ export function DashboardPage({ enabledModules }: { enabledModules: Record<Modul
     setPushNotice("");
     try {
       const result = await schedulePushTest(currentEndpoint, testDelay);
-      setPushNotice(
-        `Notificacion programada para dentro de ${result.delaySeconds} s. Puedes bloquear el movil o cerrar HotelApp.`,
-      );
+      setScheduledPushTestId(result.scheduled.id);
+      setPushNotice(`Programada para dentro de ${result.delaySeconds} s`);
     } catch (error) {
-      setPushNotice(error instanceof Error ? error.message : "No se pudo programar la prueba.");
+      setPushNotice(`❌ Error: ${pushFailureMessage(error)}`);
     } finally {
       setPushBusy("");
     }

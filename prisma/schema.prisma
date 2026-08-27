@@ -126,6 +126,8 @@ model ScheduledPush {
   sendAt         DateTime          @map("send_at")
   status         String            @default("pending")
   error          String?
+  httpStatus     Int?              @map("http_status")
+  providerReason String?           @map("provider_reason")
   createdAt      DateTime          @default(now()) @map("created_at")
   sentAt         DateTime?         @map("sent_at")
   subscription   PushSubscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)

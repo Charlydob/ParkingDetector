@@ -6,8 +6,10 @@ import {
 } from "./housekeepingPermissions.js";
 
 const WEB_PUSH_CONFIG_ID = "global";
-const DEFAULT_VAPID_SUBJECT = "mailto:no-reply@hotelapp.local";
+export const DEFAULT_VAPID_SUBJECT = "https://hotelapp.charlydob.com";
 const DEAD_SUBSCRIPTION_STATUS = new Set([404, 410]);
+const SENSITIVE_HEADER_PATTERN = /authorization|cookie|token|secret|key/i;
+const MAX_DIAGNOSTIC_TEXT_LENGTH = 4000;
 
 let generateVapidKeys = () => webpush.generateVAPIDKeys();
 let sendNotification = (subscription, payload) => webpush.sendNotification(subscription, payload);
@@ -41,8 +43,106 @@ function boolOr(value, fallback) {
   return value === undefined ? fallback : Boolean(value);
 }
 
-function vapidSubject() {
-  return cleanString(process.env.VAPID_SUBJECT || process.env.WEB_PUSH_SUBJECT) || DEFAULT_VAPID_SUBJECT;
+export function resolveVapidSubject(env = process.env) {
+  return cleanString(env.VAPID_SUBJECT) || cleanString(env.WEB_PUSH_SUBJECT) || DEFAULT_VAPID_SUBJECT;
+}
+
+function truncateDiagnosticText(value, maxLength = MAX_DIAGNOSTIC_TEXT_LENGTH) {
+  const text = String(value);
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...[truncated]` : text;
+}
+
+function normalizeStatusCode(value) {
+  const statusCode = Number(value?.statusCode || value?.status);
+  return Number.isFinite(statusCode) ? statusCode : undefined;
+}
+
+function normalizeDiagnosticBody(body) {
+  if (body === undefined || body === null || body === "") {
+    return undefined;
+  }
+
+  if (Buffer.isBuffer(body)) {
+    return truncateDiagnosticText(body.toString("utf8"));
+  }
+
+  if (typeof body === "string") {
+    return truncateDiagnosticText(body);
+  }
+
+  if (typeof body === "object") {
+    try {
+      return JSON.parse(JSON.stringify(body));
+    } catch {
+      return truncateDiagnosticText(body);
+    }
+  }
+
+  return truncateDiagnosticText(body);
+}
+
+function normalizeDiagnosticHeaders(headers) {
+  if (!headers) {
+    return undefined;
+  }
+
+  const entries = [];
+  if (typeof headers.forEach === "function") {
+    headers.forEach((value, key) => entries.push([key, value]));
+  } else if (typeof headers.entries === "function") {
+    entries.push(...headers.entries());
+  } else if (Array.isArray(headers)) {
+    entries.push(...headers);
+  } else if (typeof headers === "object") {
+    entries.push(...Object.entries(headers));
+  }
+
+  const safeHeaders = {};
+  for (const [name, value] of entries) {
+    const key = cleanString(name).toLowerCase();
+    if (!key || SENSITIVE_HEADER_PATTERN.test(key)) {
+      continue;
+    }
+
+    const text = Array.isArray(value)
+      ? value.map((item) => truncateDiagnosticText(item, 1000)).join(", ")
+      : truncateDiagnosticText(value, 1000);
+    if (text) {
+      safeHeaders[key] = text;
+    }
+  }
+
+  return Object.keys(safeHeaders).length ? safeHeaders : undefined;
+}
+
+function providerReasonFromBody(body) {
+  if (!body) {
+    return "";
+  }
+
+  try {
+    const parsed = typeof body === "string" ? JSON.parse(body) : body;
+    return cleanString(parsed?.reason || parsed?.error?.reason);
+  } catch {
+    return "";
+  }
+}
+
+function webPushFailureDiagnostics(error) {
+  const body = normalizeDiagnosticBody(error?.body);
+  const headers = normalizeDiagnosticHeaders(error?.headers);
+  const providerReason =
+    cleanString(error?.reason) ||
+    providerReasonFromBody(body) ||
+    providerReasonFromBody(error?.body);
+
+  return {
+    statusCode: normalizeStatusCode(error),
+    message: error instanceof Error ? error.message : "Web Push failed.",
+    ...(body !== undefined ? { body } : {}),
+    ...(headers ? { headers } : {}),
+    ...(providerReason ? { providerReason } : {}),
+  };
 }
 
 function publicSubscription(subscription) {
@@ -274,7 +374,7 @@ async function markPushSuccess(database, subscription) {
 }
 
 async function markPushFailure(database, subscription, error) {
-  const statusCode = Number(error?.statusCode || error?.status);
+  const statusCode = normalizeStatusCode(error);
   const dead = DEAD_SUBSCRIPTION_STATUS.has(statusCode);
 
   await database.setRecord("pushSubscriptions", subscription.id, {
@@ -294,20 +394,22 @@ export async function sendPushToSubscription(database, subscription, payload) {
   }
 
   const config = await ensureWebPushConfig(database);
-  webpush.setVapidDetails(vapidSubject(), config.publicKey, config.privateKey);
+  webpush.setVapidDetails(resolveVapidSubject(), config.publicKey, config.privateKey);
 
   try {
-    await sendNotification(browserSubscription(subscription), JSON.stringify(payload));
+    const response = await sendNotification(browserSubscription(subscription), JSON.stringify(payload));
     await markPushSuccess(database, subscription);
-    return { sent: true };
+    return { sent: true, httpStatus: normalizeStatusCode(response) };
   } catch (error) {
-    const diagnostics = await markPushFailure(database, subscription, error);
-    const message = error instanceof Error ? error.message : "Web Push failed.";
+    const diagnostics = webPushFailureDiagnostics(error);
+    const failure = await markPushFailure(database, subscription, diagnostics);
     return {
       sent: false,
-      error: message,
+      error: diagnostics.message,
       httpStatus: diagnostics.statusCode,
-      disabled: diagnostics.dead,
+      providerReason: diagnostics.providerReason || "",
+      disabled: failure.dead,
+      diagnostics,
     };
   }
 }
@@ -551,10 +653,41 @@ export async function schedulePush(database, input = {}) {
     sendAt: input.sendAt instanceof Date ? input.sendAt.toISOString() : cleanString(input.sendAt),
     status: "pending",
     error: "",
+    httpStatus: null,
+    providerReason: "",
     createdAt: timestamp,
   };
 
   return database.setRecord("scheduledPushes", record.id, record);
+}
+
+function publicScheduledPushStatus(scheduled) {
+  const httpStatus = normalizeStatusCode({
+    statusCode: scheduled.httpStatus,
+  });
+
+  return {
+    id: scheduled.id,
+    status: ["pending", "sending", "sent", "failed"].includes(scheduled.status)
+      ? scheduled.status
+      : "pending",
+    sendAt: scheduled.sendAt,
+    sentAt: scheduled.sentAt || null,
+    error: scheduled.error || "",
+    providerReason: scheduled.providerReason || "",
+    ...(httpStatus ? { httpStatus } : {}),
+  };
+}
+
+export async function getScheduledPushStatus(database, { id, userId, tenantId }) {
+  const scheduled = await getRecord(database, "scheduledPushes", cleanString(id));
+  if (!scheduled || scheduled.userId !== userId || scheduled.tenantId !== tenantId) {
+    const error = new Error("Scheduled push test not found.");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  return publicScheduledPushStatus(scheduled);
 }
 
 export async function processDueScheduledPushes(database, { limit = 20 } = {}) {
@@ -568,6 +701,9 @@ export async function processDueScheduledPushes(database, { limit = 20 } = {}) {
     await database.setRecord("scheduledPushes", scheduled.id, {
       ...scheduled,
       status: "sending",
+      error: "",
+      providerReason: "",
+      httpStatus: null,
     });
 
     try {
@@ -598,7 +734,21 @@ export async function processDueScheduledPushes(database, { limit = 20 } = {}) {
       );
 
       if (!sent.sent) {
-        throw new Error(sent.error || "Web Push failed.");
+        const message = sent.error || sent.providerReason || "Web Push failed.";
+        const updated = await database.setRecord("scheduledPushes", scheduled.id, {
+          ...scheduled,
+          status: "failed",
+          error: message,
+          httpStatus: sent.httpStatus || null,
+          providerReason: sent.providerReason || "",
+        });
+        results.push({
+          scheduledPush: updated,
+          sent: false,
+          error: message,
+          providerReason: sent.providerReason || "",
+        });
+        continue;
       }
 
       const updated = await database.setRecord("scheduledPushes", scheduled.id, {
@@ -606,16 +756,25 @@ export async function processDueScheduledPushes(database, { limit = 20 } = {}) {
         status: "sent",
         sentAt: now(),
         error: "",
+        httpStatus: sent.httpStatus || null,
+        providerReason: "",
       });
       results.push({ scheduledPush: updated, sent: true });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "unknown error";
+      const diagnostics = webPushFailureDiagnostics(error);
       const updated = await database.setRecord("scheduledPushes", scheduled.id, {
         ...scheduled,
         status: "failed",
-        error: message,
+        error: diagnostics.message,
+        httpStatus: diagnostics.statusCode || null,
+        providerReason: diagnostics.providerReason || "",
       });
-      results.push({ scheduledPush: updated, sent: false, error: message });
+      results.push({
+        scheduledPush: updated,
+        sent: false,
+        error: diagnostics.message,
+        providerReason: diagnostics.providerReason || "",
+      });
     }
   }
 

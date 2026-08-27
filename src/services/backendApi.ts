@@ -127,12 +127,14 @@ export interface PublicCheckoutTarget {
 export class BackendRequestError extends Error {
   code?: string;
   status: number;
+  payload?: Record<string, unknown>;
 
-  constructor(message: string, status: number, code?: string) {
+  constructor(message: string, status: number, code?: string, payload?: Record<string, unknown>) {
     super(message);
     this.name = "BackendRequestError";
     this.status = status;
     this.code = code;
+    this.payload = payload;
   }
 }
 
@@ -325,13 +327,17 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     credentials: "include",
   });
 
-  const payload = (await response.json().catch(() => ({}))) as { error?: string; code?: string };
+  const payload = (await response.json().catch(() => ({}))) as {
+    error?: string;
+    code?: string;
+  } & Record<string, unknown>;
 
   if (!response.ok) {
     throw new BackendRequestError(
       payload.error || `Backend request failed (${response.status}).`,
       response.status,
       payload.code,
+      payload,
     );
   }
 
@@ -348,13 +354,17 @@ async function requestPublicJson<T>(path: string, init?: RequestInit): Promise<T
     credentials: "include",
   });
 
-  const payload = (await response.json().catch(() => ({}))) as { error?: string; code?: string };
+  const payload = (await response.json().catch(() => ({}))) as {
+    error?: string;
+    code?: string;
+  } & Record<string, unknown>;
 
   if (!response.ok) {
     throw new BackendRequestError(
       payload.error || `Backend request failed (${response.status}).`,
       response.status,
       payload.code,
+      payload,
     );
   }
 
@@ -832,6 +842,30 @@ export interface PushStatus {
   preference?: PushPreference;
 }
 
+export interface PushTestResult {
+  success: boolean;
+  error?: string;
+  httpStatus?: number;
+  providerReason?: string;
+  diagnostics?: {
+    statusCode?: number;
+    message?: string;
+    body?: unknown;
+    headers?: Record<string, string>;
+    providerReason?: string;
+  };
+}
+
+export interface ScheduledPushTestStatus {
+  id: string;
+  status: "pending" | "sending" | "sent" | "failed";
+  sendAt: string;
+  sentAt?: string | null;
+  error?: string;
+  providerReason?: string;
+  httpStatus?: number;
+}
+
 export interface HousekeepingActor {
   userId: string;
   displayName: string;
@@ -932,8 +966,8 @@ export async function updatePushPreferences(
   });
 }
 
-export async function sendPushTest(endpoint: string): Promise<{ success: boolean; error?: string }> {
-  return requestJson("/api/push/test", {
+export async function sendPushTest(endpoint: string): Promise<PushTestResult> {
+  return requestJson<PushTestResult>("/api/push/test", {
     method: "POST",
     body: JSON.stringify({ endpoint }),
   });
@@ -947,6 +981,12 @@ export async function schedulePushTest(
     method: "POST",
     body: JSON.stringify({ endpoint, delaySeconds }),
   });
+}
+
+export async function getScheduledPushTest(id: string): Promise<ScheduledPushTestStatus> {
+  return requestJson<ScheduledPushTestStatus>(
+    `/api/push/test-schedule/${encodeURIComponent(id)}`,
+  );
 }
 
 export async function getHousekeepingBoard(): Promise<HousekeepingBoard> {
