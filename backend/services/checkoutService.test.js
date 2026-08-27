@@ -313,6 +313,29 @@ test("module entitlement is enforced per tenant", async () => {
   );
 });
 
+test("room access codes remain strings and can be added, changed, and cleared", async () => {
+  const database = createFakeDatabase();
+  const room = await createRoom(database, "hotelA", { number: "102", accessCode: "0421" });
+
+  assert.equal(room.accessCode, "0421");
+  assert.equal((await listCheckoutOverview(database, "hotelA")).rooms[0].accessCode, "0421");
+
+  const changed = await updateRoom(database, "hotelA", room.id, { accessCode: "A739" });
+  assert.equal(changed.accessCode, "A739");
+
+  const cleared = await updateRoom(database, "hotelA", room.id, { accessCode: "" });
+  assert.equal(cleared.accessCode, null);
+});
+
+test("room overview returns null access codes for legacy rooms", async () => {
+  const database = createFakeDatabase({
+    rooms: { legacy: { id: "legacy", tenantId: "hotelA", number: "101", active: true } },
+  });
+
+  const overview = await listCheckoutOverview(database, "hotelA");
+  assert.equal(overview.rooms[0].accessCode, null);
+});
+
 test("setting today's checkout rooms refreshes the Telegram housekeeping board", async () => {
   const calls = [];
   const database = createNotificationDatabase();

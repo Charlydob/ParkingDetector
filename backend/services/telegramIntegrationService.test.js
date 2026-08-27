@@ -399,7 +399,9 @@ test("Telegram checkout today follows the manual due date regardless of room sta
     },
   });
   const today = new Date().toISOString().slice(0, 10);
-  const occupied = await createRoom(database, "hotel-a", { number: "101", status: "occupied" });
+  const occupied = await createRoom(database, "hotel-a", {
+    number: "101", status: "occupied", accessCode: "0421",
+  });
   const ready = await createRoom(database, "hotel-a", { number: "102", status: "ready" });
   const unknown = await createRoom(database, "hotel-a", { number: "103", status: "unknown" });
 
@@ -416,6 +418,14 @@ test("Telegram checkout today follows the manual due date regardless of room sta
   assert.deepEqual(
     selectedBoard.checkoutToday.map((room) => room.roomId),
     [occupied.id, ready.id, unknown.id],
+  );
+  assert.deepEqual(
+    selectedBoard.checkoutToday.map(({ room, accessCode }) => ({ room, accessCode })),
+    [
+      { room: "101", accessCode: "0421" },
+      { room: "102", accessCode: null },
+      { room: "103", accessCode: null },
+    ],
   );
 
   const checkout = await registerCheckout(database, "hotel-a", ready.id, "manual", {

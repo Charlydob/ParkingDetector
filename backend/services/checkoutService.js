@@ -177,6 +177,7 @@ export async function listCheckoutOverview(database, tenantId) {
   return {
     rooms: rooms
       .filter(isRoomAvailable)
+      .map((room) => ({ ...room, accessCode: room.accessCode ?? null }))
       .sort((left, right) => String(left.number).localeCompare(String(right.number))),
     events: events
       .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
@@ -323,6 +324,7 @@ export async function createRoom(database, tenantId, input) {
     tenantId,
     number,
     name: cleanString(input.name),
+    accessCode: cleanString(input.accessCode) || null,
     active: input.active !== false,
     status: VALID_ROOM_STATUSES.has(input.status) ? input.status : "unknown",
     createdAt: timestamp,
@@ -414,6 +416,8 @@ export async function updateRoom(database, tenantId, roomId, patch) {
     ...current,
     number: cleanString(patch.number) || current.number,
     name: patch.name === undefined ? current.name : cleanString(patch.name),
+    accessCode:
+      patch.accessCode === undefined ? current.accessCode ?? null : cleanString(patch.accessCode) || null,
     active: patch.active === undefined ? current.active !== false : Boolean(patch.active),
     status: VALID_ROOM_STATUSES.has(patch.status) ? patch.status : current.status,
     lastCleanedAt:
